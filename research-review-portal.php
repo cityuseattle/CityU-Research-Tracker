@@ -74,7 +74,9 @@ class Research_Review_Portal {
 
 		ob_start();
 
-		if ( ! $logged_in ) {
+		$show_portal = isset( $_GET['portal'] ) && '1' === $_GET['portal'];
+
+		if ( ! $show_portal || ! $logged_in ) {
 			?>
 			<div id="research-review-portal" class="rrp-portal">
 				<div class="rrp-notice">
@@ -86,8 +88,11 @@ class Research_Review_Portal {
 						<li>Student Project: Capstone and student research proposals</li>
 						<li>Grant: Funding and grant proposal submissions</li>
 					</ul>
-					<p>This page is for guests. To submit documents and access your personalized dashboard, please log in below.</p>
+					<p>This page is open to any visitor. To submit documents and access your personalized dashboard, please log in below.</p>
 					<p><a href="<?php echo esc_url( $login_url ); ?>" class="rrp-btn">Log in to submit and access dashboard</a></p>
+					<?php if ( $logged_in ) : ?>
+						<p><a href="<?php echo esc_url( add_query_arg( 'portal', '1', get_permalink() ) ); ?>" class="rrp-btn secondary">Go to your portal</a></p>
+					<?php endif; ?>
 				</div>
 				<div class="rrp-process-docs-container">
 					<h2>Submission Process Flow (by type)</h2>
