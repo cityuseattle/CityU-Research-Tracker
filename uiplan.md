@@ -10,7 +10,7 @@ The site has two main entry modes:
 ## Entry points
 
 1. `/` or site homepage
-   - default to guest landing page (even if logged in)
+   - default to guest landing page (even if logged in, it should show user specific homepage)
    - shows portal purpose, supported submission types, and process flow
    - includes login button
    - if logged in, offers "Go to your portal" button (adds `?portal=1`)
@@ -33,7 +33,8 @@ The site has two main entry modes:
 - Supported types:
   - Conference / Symposium
   - Publication
-  - Student Project
+  - Student Project - capstone project
+  - Doctoral Research - Dissertation
   - Grant
 - Process flow section:
   - shortcode `[rrp_process_documentation type="all" style="compact"]`
