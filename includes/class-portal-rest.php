@@ -84,6 +84,21 @@ class Portal_REST {
 			'callback'            => array( __CLASS__, 'dashboard' ),
 			'permission_callback' => array( __CLASS__, 'can_view_dashboard' ),
 		) );
+		register_rest_route( self::NAMESPACE, '/analytics/workflow', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'analytics_workflow' ),
+			'permission_callback' => array( __CLASS__, 'can_view_dashboard' ),
+		) );
+		register_rest_route( self::NAMESPACE, '/analytics/performance', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'analytics_performance' ),
+			'permission_callback' => array( __CLASS__, 'can_view_dashboard' ),
+		) );
+		register_rest_route( self::NAMESPACE, '/reports/export', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'reports_export' ),
+			'permission_callback' => array( __CLASS__, 'can_view_dashboard' ),
+		) );
 		register_rest_route( self::NAMESPACE, '/notifications', array(
 			'methods'             => 'GET',
 			'callback'            => array( __CLASS__, 'notifications' ),
@@ -321,6 +336,41 @@ class Portal_REST {
 		return new WP_REST_Response( $data, 200 );
 	}
 
+	public static function analytics_workflow( WP_REST_Request $request ) {
+		$metrics = Portal_Data::get_workflow_metrics();
+		return new WP_REST_Response( $metrics, 200 );
+	}
+
+	public static function analytics_performance( WP_REST_Request $request ) {
+		$metrics = Portal_Data::get_performance_metrics();
+		return new WP_REST_Response( $metrics, 200 );
+	}
+
+	public static function reports_export( WP_REST_Request $request ) {
+		$format = strtolower( trim( (string) $request->get_param( 'format' ) ) );
+		if ( $format !== 'csv' && $format !== 'xlsx' ) {
+			$format = 'csv';
+		}
+
+		$type = strtolower( trim( (string) $request->get_param( 'type' ) ) );
+		if ( $type !== 'workflow' && $type !== 'performance' ) {
+			$type = 'workflow';
+		}
+
+		$data = ( $type === 'performance' ) ? Portal_Data::get_performance_metrics() : Portal_Data::get_workflow_metrics();
+
+		if ( $format === 'xlsx' ) {
+			// Simplified xlsx as CSV with extra header for systems that can open as Excel.
+			$content = Portal_Data::generate_report_csv( array( $data ), array_keys( $data ) );
+			$filename = sprintf( 'rrp-%s-report-%s.xlsx', $type, date( 'Ymd' ) );
+			return new WP_REST_Response( array( 'content' => base64_encode( $content ), 'filename' => $filename ), 200 );
+		}
+
+		$content = Portal_Data::generate_report_csv( array( $data ), array_keys( $data ) );
+		$filename = sprintf( 'rrp-%s-report-%s.csv', $type, date( 'Ymd' ) );
+		return new WP_REST_Response( array( 'content' => base64_encode( $content ), 'filename' => $filename ), 200 );
+	}
+
 	/**
 	 * Helper function to get submission by ID
 	 */
@@ -392,6 +442,25 @@ class Portal_REST {
 		);
 		if ( function_exists( 'wp_mail' ) ) {
 			return (bool) wp_mail( $to, $subject, $message );
+		}
+		return true;
+	}
+
+	public static function scheduled_report() {
+		$metrics = Portal_Data::get_performance_metrics();
+		$workflow = Portal_Data::get_workflow_metrics();
+		$now = date( 'Y-m-d H:i:s' );
+		$subject = "Research Review Portal Daily Report ({$now})";
+		$message = "Daily summary from Research Review Portal:\n\n";
+		$message .= "Total submissions: " . ( $workflow['totalSubmissions'] ?? 0 ) . "\n";
+		$message .= "Finalized: " . ( $metrics['finalizedCount'] ?? 0 ) . "\n";
+		$message .= "In progress: " . ( $metrics['inProgressCount'] ?? 0 ) . "\n";
+		$message .= "Average decision days: " . ( $metrics['averageTimeToDecisionDays'] ?? 0 ) . "\n";
+		$message .= "Late review alerts: " . ( $metrics['lateReviewAlerts'] ?? 0 ) . "\n";
+
+		$admin_email = get_option( 'admin_email' );
+		if ( $admin_email && is_email( $admin_email ) && function_exists( 'wp_mail' ) ) {
+			wp_mail( $admin_email, $subject, $message );
 		}
 		return true;
 	}

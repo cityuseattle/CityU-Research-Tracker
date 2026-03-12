@@ -583,6 +583,106 @@ class Portal_Data {
 		return $return;
 	}
 
+	public static function get_workflow_metrics( $params = array() ) {
+		$data = self::read_submissions();
+		$submissions = isset( $data['submissions'] ) && is_array( $data['submissions'] ) ? $data['submissions'] : array();
+
+		$metrics = array(
+			'totalSubmissions' => count( $submissions ),
+			'totalByType' => array(),
+			'totalByStatus' => array(),
+			'averageStages' => 0,
+			'meanReviewerLoad' => 0,
+		);
+
+		$stageCounts = 0;
+		$reviewerCounts = 0;
+
+		foreach ( $submissions as $sub ) {
+			$type = $sub['type'] ?? 'unknown';
+			$status = $sub['status'] ?? 'unknown';
+			$stages = isset( $sub['reviewStages'] ) && is_array( $sub['reviewStages'] ) ? $sub['reviewStages'] : array();
+			$reviewers = isset( $sub['assignedReviewers'] ) && is_array( $sub['assignedReviewers'] ) ? $sub['assignedReviewers'] : array();
+
+			$metrics['totalByType'][ $type ] = ( isset( $metrics['totalByType'][ $type ] ) ? $metrics['totalByType'][ $type ] : 0 ) + 1;
+			$metrics['totalByStatus'][ $status ] = ( isset( $metrics['totalByStatus'][ $status ] ) ? $metrics['totalByStatus'][ $status ] : 0 ) + 1;
+			$stageCounts += count( $stages );
+			$reviewerCounts += count( $reviewers );
+		}
+
+		if ( $metrics['totalSubmissions'] > 0 ) {
+			$metrics['averageStages'] = round( $stageCounts / $metrics['totalSubmissions'], 2 );
+			$metrics['meanReviewerLoad'] = round( $reviewerCounts / $metrics['totalSubmissions'], 2 );
+		}
+
+		return $metrics;
+	}
+
+	public static function get_performance_metrics( $params = array() ) {
+		$data = self::read_submissions();
+		$submissions = isset( $data['submissions'] ) && is_array( $data['submissions'] ) ? $data['submissions'] : array();
+
+		$metrics = array(
+			'averageTimeToDecisionDays' => null,
+			'finalizedCount' => 0,
+			'inProgressCount' => 0,
+			'pendingCount' => 0,
+			'lateReviewAlerts' => 0,
+		);
+
+		$timeDiffs = array();
+		$now = time();
+
+		foreach ( $submissions as $sub ) {
+			$status = $sub['status'] ?? '';
+			$createdAt = isset( $sub['createdAt'] ) ? strtotime( $sub['createdAt'] ) : null;
+			if ( $status === 'Confirmed for Presentation' || $status === 'Published' || $status === 'Approved for Submission' || $status === 'Approved' || $status === 'Accepted' ) {
+				$metrics['finalizedCount']++;
+				if ( $createdAt ) {
+					$timeDiffs[] = ( $now - $createdAt ) / DAY_IN_SECONDS;
+				}
+			} elseif ( in_array( $status, array( 'Submitted', 'Under Review', 'Under Initial Review', 'Administrative Review', 'Revision Required', 'Revision Submitted' ), true ) ) {
+				$metrics['inProgressCount']++;
+				if ( $createdAt && ( $now - $createdAt ) > ( 14 * DAY_IN_SECONDS ) ) {
+					$metrics['lateReviewAlerts']++;
+				}
+			} else {
+				$metrics['pendingCount']++;
+			}
+		}
+
+		if ( ! empty( $timeDiffs ) ) {
+			$metrics['averageTimeToDecisionDays'] = round( array_sum( $timeDiffs ) / count( $timeDiffs ), 2 );
+		}
+
+		return $metrics;
+	}
+
+	public static function generate_report_csv( $records, $columns = array() ) {
+		$fp = fopen( 'php://temp', 'r+' );
+		if ( ! $fp ) {
+			return '';
+		}
+
+		if ( empty( $columns ) && ! empty( $records ) ) {
+			$columns = array_keys( (array) reset( $records ) );
+		}
+
+		fputcsv( $fp, $columns );
+		foreach ( $records as $record ) {
+			$row = array();
+			foreach ( $columns as $col ) {
+				$row[] = isset( $record[ $col ] ) ? $record[ $col ] : '';
+			}
+			fputcsv( $fp, $row );
+		}
+
+		rewind( $fp );
+		$output = stream_get_contents( $fp );
+		fclose( $fp );
+		return $output;
+	}
+
 	private static function array_find_by_email( $arr, $email ) {
 		$email = strtolower( trim( $email ) );
 		foreach ( $arr as $a ) {

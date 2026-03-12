@@ -34,6 +34,12 @@ if ( ! function_exists( 'sanitize_text_field' ) ) {
 	}
 }
 
+if ( ! function_exists( 'is_wp_error' ) ) {
+	function is_wp_error( $data ) {
+		return false;
+	}
+}
+
 class Test_Data_Generator {
     
     /**
@@ -341,6 +347,10 @@ function run_sprint1_tests() {
     // 5. Test WordPress integration
     echo "Testing WordPress integration...\n";
     test_wordpress_integration();
+
+    // 6. Test Sprint 4 analytics and reports
+    echo "Testing sprint4 analytics and reports...\n";
+    test_sprint4_features();
     
     echo "=== Sprint 1 Testing Completed ===\n";
 }
@@ -485,6 +495,25 @@ function test_wordpress_integration() {
     $tests['process_docs_loaded'] = class_exists('RRP_Process_Documentation');
     
     log_test_results('wordpress_integration', $tests);
+    return $tests;
+}
+
+function test_sprint4_features() {
+    $tests = [];
+
+    $workflow = Portal_Data::get_workflow_metrics();
+    $performance = Portal_Data::get_performance_metrics();
+
+    $tests['workflow_keys'] = is_array( $workflow ) && isset( $workflow['totalSubmissions'] ) && isset( $workflow['totalByStatus'] );
+    $tests['performance_keys'] = is_array( $performance ) && isset( $performance['finalizedCount'] ) && isset( $performance['averageTimeToDecisionDays'] );
+
+    $csv = Portal_Data::generate_report_csv( array( $workflow ), array_keys( $workflow ) );
+    $tests['generate_csv'] = is_string( $csv ) && strlen( $csv ) > 0;
+
+    $tests['rest_csv_export_method'] = method_exists( 'Portal_REST', 'reports_export' );
+    $tests['rest_analytics_methods'] = method_exists( 'Portal_REST', 'analytics_workflow' ) && method_exists( 'Portal_REST', 'analytics_performance' );
+
+    log_test_results( 'sprint4', $tests );
     return $tests;
 }
 

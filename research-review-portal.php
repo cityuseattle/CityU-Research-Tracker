@@ -60,3 +60,15 @@ class Research_Review_Portal {
 
 	add_action( 'init', array( 'Research_Review_Portal', 'init' ) );
 	add_action( 'rest_api_init', array( 'Portal_REST', 'register_routes' ) );
+
+	add_action( 'rrp_daily_report', array( 'Portal_REST', 'scheduled_report' ) );
+
+	register_activation_hook( __FILE__, function() {
+		if ( ! wp_next_scheduled( 'rrp_daily_report' ) ) {
+			wp_schedule_event( time(), 'daily', 'rrp_daily_report' );
+		}
+	} );
+
+	register_deactivation_hook( __FILE__, function() {
+		wp_clear_scheduled_hook( 'rrp_daily_report' );
+	} );
