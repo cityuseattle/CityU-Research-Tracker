@@ -180,6 +180,32 @@
   background: var(--rrp-primary-dark);
 }
 
+.rrp-portal .rrp-user-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+
+.rrp-portal .rrp-user-banner-guest {
+  background: #f6f9ff;
+  border: 1px solid #cfe2ff;
+  color: #084298;
+}
+
+.rrp-portal .rrp-user-banner-loggedin {
+  background: #e6f4ea;
+  border: 1px solid #a5d6a7;
+  color: #1e4620;
+}
+
+.rrp-portal .rrp-user-banner .rrp-btn { padding: 0.4rem 0.75rem; }
+}
+
 .rrp-portal .rrp-dashboard-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

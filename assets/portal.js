@@ -41,15 +41,23 @@
   function renderSelection(container) {
     if (!isLoggedIn) {
       container.innerHTML =
+        '<div class="rrp-user-banner rrp-user-banner-guest">' +
+          '<span>You are not logged in. Please <a href="' + escapeHtml(loginUrl) + '">log in</a> to submit and track your research.</span>' +
+          '<a class="rrp-btn" href="' + escapeHtml(loginUrl) + '">Log in</a>' +
+        '</div>' +
         '<h1>Research Submission Process</h1>' +
-        '<p class="rrp-info">You are not logged in. To submit research and access your dashboard, please <a href="' + escapeHtml(loginUrl) + '">log in</a> first.</p>' +
+        '<p class="rrp-info">Select a submission type below to view the process details.</p>' +
         '<p class="rrp-info">If you do not have an account, contact your administrator.</p>' +
-        '<p><a class="rrp-btn secondary" href="' + escapeHtml(loginUrl) + '">Log in</a></p>' +
         '<div style="margin-top:1rem;"><a class="rrp-btn" href="/">View process documentation</a></div>';
       return;
     }
 
-    container.innerHTML =
+    var headerBanner = '<div class="rrp-user-banner rrp-user-banner-loggedin">' +
+      '<span>Logged in as <strong>' + escapeHtml(window.RRP.userName || 'Unknown') + '</strong> (' + escapeHtml(window.RRP.userRole || 'User') + ')</span>' +
+      '<a href="' + escapeHtml(logoutUrl) + '" class="rrp-btn secondary">Logout</a>' +
+      '</div>';
+
+    container.innerHTML = headerBanner +
       '<h1>Research Review Portal</h1>' +
       '<p style="color: var(--rrp-text-muted); margin-bottom: 1rem;">Choose a submission type to get started.</p>' +
       '<div class="rrp-type-cards" id="rrp-type-cards"></div>' +

@@ -47,14 +47,29 @@ class Research_Review_Portal {
 		$logged_in = is_user_logged_in();
 		$login_url = wp_login_url( get_permalink() );
 		$logout_url = wp_logout_url( get_permalink() );
+		$current_user = wp_get_current_user();
+		$user_name = $current_user->exists() ? ( $current_user->display_name ?: $current_user->user_login ) : '';
+		$user_roles = $current_user->exists() ? $current_user->roles : array();
+		$role_label = '';
+		if ( in_array( 'rrp_student', $user_roles, true ) ) {
+			$role_label = 'Student';
+		} elseif ( in_array( 'rrp_reviewer', $user_roles, true ) ) {
+			$role_label = 'Reviewer';
+		} elseif ( in_array( 'rrp_coordinator', $user_roles, true ) ) {
+			$role_label = 'Coordinator';
+		} elseif ( in_array( 'rrp_admin', $user_roles, true ) || in_array( 'administrator', $user_roles, true ) ) {
+			$role_label = 'Admin';
+		}
 
 		wp_add_inline_script( 'research-review-portal', sprintf(
-			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: %s, loginUrl: %s, logoutUrl: %s };',
+			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: %s, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s };',
 			wp_json_encode( rest_url( 'research-portal/v1' ) ),
 			wp_json_encode( wp_create_nonce( 'wp_rest' ) ),
 			wp_json_encode( $logged_in ),
 			wp_json_encode( $login_url ),
-			wp_json_encode( $logout_url )
+			wp_json_encode( $logout_url ),
+			wp_json_encode( $user_name ),
+			wp_json_encode( $role_label )
 		), 'before' );
 
 		ob_start();
