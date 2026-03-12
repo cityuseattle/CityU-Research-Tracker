@@ -566,4 +566,30 @@ gantt
 4. **Kick-off Meeting** - Initiate Sprint 1 with full team
 5. **Entra ID Coordination** - Begin Microsoft Entra ID integration setup with IT department
 
-This comprehensive implementation plan provides a structured approach to enhancing the Research Review Portal while minimizing risks and ensuring successful delivery of all required features.
+This comprehensive implementation plan provides a structured approach to enhancing the Research Review Portal while minimizing risks and ensuring successful delivery of all required features.## Implementation and Validation Status (Sprint 1-5)
+
+- [x] Sprint 1: Core plugin architecture, submission endpoints, data storage, REST API. ✅ implemented and verified with test runner.
+- [x] Sprint 2: Enhanced submission validation, review stages, timeline/notifications, draft workflow. ✅ implemented and verified with test runner.
+- [x] Sprint 3: Reviewer dashboard analytics, user metrics, workflow status endpoints. ✅ implemented and verified with direct WP REST check.
+- [x] Sprint 4: Workflow/performance analytics endpoints, report export, scheduled reports. ✅ implemented and verified with direct WP REST check and feature tests.
+- [x] Sprint 5: Reviewer workload analytics, COI tracking, criteria templates, rating API/UI. ✅ implemented and verified with direct WP REST check and feature tests.
+
+### Homepage setup
+
+- Created page "Research Review Portal" with `[research_review_portal]` in WordPress (ID 5).
+- Set front page to page ID 5 (the portal page) via WP options.
+- Confirmed root `/` now returns full WordPress page with stylesheet, scripts and portal embed.
+
+### Runtime check results
+
+- `/wp-json/research-portal/v1/health` → 200 OK
+- `/wp-json/research-portal/v1/analytics/workload` → 401 (permission guarded, route exists)
+- `/wp-json/research-portal/v1/conflicts` → 200 (as admin internal), route exists
+- `/wp-json/research-portal/v1/config/review-templates` → 200, returns templates
+- `reviews/rate` POST endpoint exists and permission protected.
+
+### Notes
+
+- WP-CLI default PHP (8.0.30) lacked mysqli; this is an environment path issue and not code issue.
+- Direct PHP script bootstrap uses /usr/bin/php (8.3.6 with mysqli) and verifies plugin functionality.
+
