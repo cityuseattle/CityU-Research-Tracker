@@ -658,6 +658,80 @@ class Portal_Data {
 		return $metrics;
 	}
 
+	public static function get_reviewer_metrics( $reviewer_email ) {
+		$reviewer_email = strtolower( trim( (string) $reviewer_email ) );
+		$data = self::read_submissions();
+		$submissions = isset( $data['submissions'] ) && is_array( $data['submissions'] ) ? $data['submissions'] : array();
+
+		$metrics = array(
+			'reviewerEmail' => $reviewer_email,
+			'totalAssigned' => 0,
+			'pending' => 0,
+			'approved' => 0,
+			'rejected' => 0,
+			'needsRevision' => 0,
+			'overdue' => 0,
+			'reviewHistory' => array(),
+		);
+
+		$now = time();
+		foreach ( $submissions as $sub ) {
+			$assigned = false;
+			$status = $sub['status'] ?? '';
+			$deadline = null;
+			foreach ( $sub['assignedReviewers'] ?? array() as $r ) {
+				if ( strtolower( trim( (string) ( $r['email'] ?? '' ) ) ) === $reviewer_email ) {
+					$assigned = true;
+					$deadline = isset( $r['deadline'] ) ? strtotime( $r['deadline'] ) : null;
+					break;
+				}
+			}
+			if ( ! $assigned ) {
+				continue;
+			}
+
+			$metrics['totalAssigned']++;
+			$decision = 'Pending';
+			foreach ( $sub['reviewStages'] ?? array() as $stage ) {
+				$decisions = isset( $stage['decisions'] ) && is_array( $stage['decisions'] ) ? $stage['decisions'] : array();
+				if ( isset( $decisions[ $reviewer_email ] ) ) {
+					$decision = $decisions[ $reviewer_email ];
+					break;
+				}
+			}
+
+			$metrics['reviewHistory'][] = array(
+				'id' => $sub['id'] ?? '',
+				'title' => $sub['title'] ?? '',
+				'status' => $status,
+				'decision' => $decision,
+				'deadline' => $deadline ? date( 'Y-m-d', $deadline ) : null,
+			);
+
+			switch ( strtolower( trim( (string) $decision ) ) ) {
+				case 'approved':
+					$metrics['approved']++;
+					break;
+				case 'rejected':
+					$metrics['rejected']++;
+					break;
+				case 'needs revision':
+				case 'revision required':
+					$metrics['needsRevision']++;
+					break;
+				default:
+					$metrics['pending']++;
+					break;
+			}
+
+			if ( $deadline && $now > $deadline && ! in_array( strtolower( $decision ), array( 'approved', 'rejected' ), true ) ) {
+				$metrics['overdue']++;
+			}
+		}
+
+		return $metrics;
+	}
+
 	public static function generate_report_csv( $records, $columns = array() ) {
 		$fp = fopen( 'php://temp', 'r+' );
 		if ( ! $fp ) {

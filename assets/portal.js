@@ -44,6 +44,8 @@
         '<button type="button" class="rrp-btn secondary" data-view="submit">Submit new abstract</button>' +
         '<button type="button" class="rrp-btn secondary" data-view="status">Check my submissions</button>' +
         '<button type="button" class="rrp-btn secondary" data-view="dashboard">Dashboard</button>' +
+        '<button type="button" class="rrp-btn secondary" data-view="analytics">Analytics</button>' +
+        '<button type="button" class="rrp-btn secondary" data-view="reviewer">Reviewer Dashboard</button>' +
         '<button type="button" class="rrp-btn secondary" data-view="public">Research & symposium (public)</button>' +
       '</div>';
 
@@ -69,6 +71,12 @@
           renderForm(container, type);
         } else if (view === 'status') {
           renderStatus(container);
+        } else if (view === 'dashboard') {
+          renderDashboard(container);
+        } else if (view === 'analytics') {
+          renderAnalytics(container);
+        } else if (view === 'reviewer') {
+          renderReviewerDashboard(container);
         } else {
           renderPublic(container);
         }
@@ -253,6 +261,106 @@
         .catch(function () {
           listEl.innerHTML = '<div class="rrp-error">Could not load submissions.</div>';
         });
+    });
+  }
+
+  function renderAnalytics(container) {
+    container.innerHTML =
+      '<h1>Analytics</h1>' +
+      '<button type="button" class="rrp-btn secondary" style="margin-bottom: 1rem;" data-back>← Back</button>' +
+      '<div id="rrp-analytics-content" class="rrp-analytics-content">Loading analytics…</div>' +
+      '<div class="rrp-analytics-actions" style="margin-top: 1rem;"><button class="rrp-btn" id="rrp-export-csv">Export CSV</button><button class="rrp-btn" id="rrp-export-xlsx" style="margin-left:0.5rem;">Export XLSX</button></div>';
+
+    container.querySelector('[data-back]').addEventListener('click', function () { renderSelection(container); });
+
+    Promise.all([
+      api('GET', '/analytics/workflow'),
+      api('GET', '/analytics/performance')
+    ]).then(function (results) {
+      var w = results[0];
+      var p = results[1];
+      var el = document.getElementById('rrp-analytics-content');
+      el.innerHTML =
+        '<p><strong>Total submissions:</strong> ' + (w.totalSubmissions || 0) + '</p>' +
+        '<p><strong>Average stages per submission:</strong> ' + (w.averageStages || 0) + '</p>' +
+        '<p><strong>Mean reviewer load:</strong> ' + (w.meanReviewerLoad || 0) + '</p>' +
+        '<p><strong>Finalized submissions:</strong> ' + (p.finalizedCount || 0) + '</p>' +
+        '<p><strong>In-progress submissions:</strong> ' + (p.inProgressCount || 0) + '</p>' +
+        '<p><strong>Average time to decision (days):</strong> ' + (p.averageTimeToDecisionDays || 0) + '</p>' +
+        '<p><strong>Late review alerts:</strong> ' + (p.lateReviewAlerts || 0) + '</p>';
+
+      document.getElementById('rrp-export-csv').addEventListener('click', function () {
+        api('GET', '/reports/export?type=workflow&format=csv').then(function (resp) {
+          var blob = new Blob([atob(resp.content)], { type: 'text/csv' });
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = resp.filename || 'rrp-workflow.csv';
+          a.click();
+        }).catch(function () {
+          alert('Export failed');
+        });
+      });
+
+      document.getElementById('rrp-export-xlsx').addEventListener('click', function () {
+        api('GET', '/reports/export?type=workflow&format=xlsx').then(function (resp) {
+          var blob = new Blob([atob(resp.content)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = resp.filename || 'rrp-workflow.xlsx';
+          a.click();
+        }).catch(function () {
+          alert('Export failed');
+        });
+      });
+
+    }).catch(function (err) {
+      document.getElementById('rrp-analytics-content').innerHTML = '<div class="rrp-error">Unable to load analytics. Please login and try again.</div>';
+    });
+  }
+
+  function renderReviewerDashboard(container) {
+    container.innerHTML =
+      '<h1>Reviewer Dashboard</h1>' +
+      '<button type="button" class="rrp-btn secondary" style="margin-bottom: 1rem;" data-back>← Back</button>' +
+      '<div class="rrp-form-block"><label>Reviewer Email</label><input type="email" id="rrp-reviewer-email" placeholder="reviewer@cityu.edu.hk" required></div>' +
+      '<button type="button" class="rrp-btn" id="rrp-reviewer-metrics-btn">Load Metrics</button>' +
+      '<div id="rrp-reviewer-metrics" style="margin-top:1rem;"></div>';
+
+    container.querySelector('[data-back]').addEventListener('click', function () { renderSelection(container); });
+
+    document.getElementById('rrp-reviewer-metrics-btn').addEventListener('click', function () {
+      var email = document.getElementById('rrp-reviewer-email').value;
+      if (!email) {
+        alert('Please enter reviewer email.');
+        return;
+      }
+      var output = document.getElementById('rrp-reviewer-metrics');
+      output.innerHTML = '<p class="rrp-loading">Loading reviewer metrics…</p>';
+
+      Promise.all([
+        api('GET', '/analytics/reviewer?reviewerEmail=' + encodeURIComponent(email)),
+        api('GET', '/reviews?reviewerEmail=' + encodeURIComponent(email))
+      ]).then(function (results) {
+        var metrics = results[0];
+        var submissions = results[1].submissions || [];
+
+        output.innerHTML =
+          '<p><strong>Email:</strong> ' + escapeHtml(metrics.reviewerEmail || email) + '</p>' +
+          '<p><strong>Total assignments:</strong> ' + (metrics.totalAssigned || 0) + '</p>' +
+          '<p><strong>Pending:</strong> ' + (metrics.pending || 0) + '</p>' +
+          '<p><strong>Approved:</strong> ' + (metrics.approved || 0) + '</p>' +
+          '<p><strong>Rejected:</strong> ' + (metrics.rejected || 0) + '</p>' +
+          '<p><strong>Needs revision:</strong> ' + (metrics.needsRevision || 0) + '</p>' +
+          '<p><strong>Overdue:</strong> ' + (metrics.overdue || 0) + '</p>';
+
+        if (submissions.length) {
+          output.innerHTML += '<h3>Assigned submissions</h3><ul class="rrp-list">' + submissions.map(function (item) {
+            return '<li><strong>' + escapeHtml(item.title || item.id) + '</strong> · ' + escapeHtml(item.status || '') + '</li>';
+          }).join('') + '</ul>';
+        }
+      }).catch(function () {
+        output.innerHTML = '<div class="rrp-error">Unable to load reviewer metrics.</div>';
+      });
     });
   }
 

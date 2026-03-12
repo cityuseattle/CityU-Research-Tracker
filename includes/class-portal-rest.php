@@ -94,6 +94,11 @@ class Portal_REST {
 			'callback'            => array( __CLASS__, 'analytics_performance' ),
 			'permission_callback' => array( __CLASS__, 'can_view_dashboard' ),
 		) );
+		register_rest_route( self::NAMESPACE, '/analytics/reviewer', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'analytics_reviewer' ),
+			'permission_callback' => array( __CLASS__, 'can_view_dashboard' ),
+		) );
 		register_rest_route( self::NAMESPACE, '/reports/export', array(
 			'methods'             => 'GET',
 			'callback'            => array( __CLASS__, 'reports_export' ),
@@ -343,6 +348,15 @@ class Portal_REST {
 
 	public static function analytics_performance( WP_REST_Request $request ) {
 		$metrics = Portal_Data::get_performance_metrics();
+		return new WP_REST_Response( $metrics, 200 );
+	}
+
+	public static function analytics_reviewer( WP_REST_Request $request ) {
+		$reviewer_email = $request->get_param( 'reviewerEmail' );
+		if ( ! $reviewer_email ) {
+			return new WP_REST_Response( array( 'error' => 'reviewerEmail query parameter is required.' ), 400 );
+		}
+		$metrics = Portal_Data::get_reviewer_metrics( $reviewer_email );
 		return new WP_REST_Response( $metrics, 200 );
 	}
 
