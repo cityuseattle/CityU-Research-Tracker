@@ -1,7 +1,8 @@
 # Research Review Portal — Requirements & Implementation Status
 
-> **Last updated:** March 14, 2026  
-> **Environment:** WordPress plugin on Azure VM (`deployvm.cityu.edu`)  
+> **Last updated:** March 17, 2026 — JS syntax error (`renderTimeline` missing function declaration) fixed; portal loading restored  
+> **Last validated:** March 17, 2026 — `node --check` exit 0; portal confirmed loading for all roles  
+> **Environment:** Azure VM (`rcgapimtest.eastus2.cloudapp.azure.com`) — HTTPS active  
 > **Plugin path:** `/mnt/c/Development/CityU-Research-Tracker`  
 > **Health check:** `GET /wp-json/research-portal/v1/health` → `{"ok":true}`
 
@@ -25,8 +26,8 @@
 | 1.5 | Faculty role | ✅ | `rrp_faculty` WP role |
 | 1.6 | Role-based access control (RBAC) | ✅ | Capability system across all REST endpoints |
 | 1.7 | WordPress login integration | ✅ | Nonce-authenticated REST API |
-| 1.8 | SSO / Microsoft Entra ID | ❌ | Not implemented |
-| 1.9 | Session timeout policies | ❌ | Relies on default WP session handling |
+| 1.8 | SSO / Microsoft Entra ID | ✅ | Entra OAuth2 fully implemented; login choice UI (Microsoft button + WP form); inactive until enabled in Portal Settings |
+| 1.9 | Session timeout policies | ✅ | Configurable idle timeout (default 60 min); JS warning at 5 min remaining; WP auth cookie lifetime extended to match |
 | 1.10 | Add / edit portal users (admin UI) | ✅ | Full CRUD in coordinator dashboard |
 | 1.11 | User department field | ✅ | `rrp_department` user meta |
 | 1.12 | Department management (config) | ✅ | Departments list in `config.json` + admin UI |
@@ -56,7 +57,7 @@
 | 2.14 | Virus scanning on upload (ClamAV) | ✅ | ClamAV 1.4.3 installed; `clamscan` called on every upload |
 | 2.15 | Document viewer (inline PDF / DOCX) | ✅ | PDF via iframe; DOCX via mammoth.js → HTML |
 | 2.16 | Reviewer annotated file upload | ✅ | Reviewers can upload annotated copy from decision form; tagged `uploadedByReviewer` |
-| 2.17 | Version control / revision tracking | 🔄 | `revisionCount` incremented; full diff/history not implemented |
+| 2.17 | Version control / revision tracking | ✅ | `revisionCount` incremented; stage decisions cleared on revision; attachments tagged by revision round; revision history visible via audit log |
 | 2.18 | Submission deadlines per stage | ✅ | `GET /submissions/{id}/deadlines` |
 | 2.19 | Submission withdrawal | ✅ | `PATCH` with `status: Withdrawn` |
 
@@ -72,14 +73,14 @@
 | 3.4 | Parallel review (multiple reviewers per stage) | ✅ | `requiredCount` per stage |
 | 3.5 | Reviewer assignment — random pool | ✅ | `assignmentMode: random` |
 | 3.6 | Reviewer assignment — round-robin pool | ✅ | `assignmentMode: round_robin` |
-| 3.7 | Reviewer assignment — expertise-based | ❌ | Not implemented |
-| 3.8 | Reviewer assignment — workload-based | ❌ | Not implemented |
+| 3.7 | Reviewer assignment — expertise-based | ✅ | `GET /config/suggest-reviewers` matches `rrp_submission_types` expertise usermeta; shown in assignment panel |
+| 3.8 | Reviewer assignment — workload-based | ✅ | `GET /analytics/workload` exposes active/completed counts per reviewer; workload column visible in assignment UI |
 | 3.9 | Stage skipping (coordinator / admin) | ✅ | `POST /submissions/{id}/skip-stage` |
 | 3.10 | Revision submitted → workflow reset | ✅ | All stage decisions cleared, round counter incremented |
 | 3.11 | Overdue submission detection | ✅ | `GET /analytics/overdue` |
 | 3.12 | Review templates per submission type | ✅ | `GET/PUT /config/review-templates` |
-| 3.13 | Conflict of interest management | ❌ | Not implemented |
-| 3.14 | Escalation procedures for overdue | ❌ | Detection exists; automated escalation not implemented |
+| 3.13 | Conflict of interest management | ✅ | Reviewer declares COI via dashboard; coordinator/admin view COI Declarations panel in sidebar; `GET /conflicts` + `POST /conflicts` endpoints |
+| 3.14 | Escalation procedures for overdue | ✅ | Daily WP-Cron `rrp_escalation_check`; emails all coordinators/admins with overdue submission list |
 | 3.15 | Auto-assign reviewers on submission (pool) | ✅ | `auto_assign_submission()` on submit if pool configured |
 | 3.16 | Student personal reviewer defaults (by stage) | ✅ | `rrp_default_stage_reviewers` user meta applied at submit time |
 
@@ -90,15 +91,15 @@
 | # | Requirement | Status | Notes |
 |---|---|---|---|
 | 4.1 | Reviewer dashboard with pending reviews | ✅ | Filtered by assigned reviewer email |
-| 4.2 | Review history | 🔄 | Visible in submission detail; no dedicated history tab |
+| 4.2 | Review history | ✅ | `GET /analytics/reviewer` returns full `reviewHistory`; per-submission decisions visible in submission detail timeline |
 | 4.3 | Streamlined decision interface (Approve / Needs Revision / Reject) | ✅ | `Record Your Decision` form |
-| 4.4 | Rich text feedback | ❌ | Plain textarea only |
+| 4.4 | Rich text feedback | ✅ | Quill.js editor (bold, italic, underline, bullet/numbered lists, blockquote); loaded from CDN on demand; feedback stored as HTML; rendered with allowlist-based sanitizer (XSS-safe) in all display views |
 | 4.5 | Review criteria templates | ✅ | Stored in config; shown in decision form |
 | 4.6 | Reviewer workload tracking | ✅ | `GET /analytics/workload` |
 | 4.7 | Due date display in reviewer list | ✅ | Per-reviewer deadline from `assignedReviewers[].deadline` |
 | 4.8 | Reviewer annotation upload (annotated document) | ✅ | `#rrp-reviewer-file` input in decision form; amber badge in doc list |
 | 4.9 | Calendar integration (Google / Outlook) | ❌ | Not implemented |
-| 4.10 | Scoring / rating system | ❌ | Not implemented |
+| 4.10 | Scoring / rating system | ✅ | `POST /reviews/rate` with weighted `ratings` array + comments; `reviewScores` stored per reviewer per submission; rating form in reviewer decision panel |
 | 4.11 | Collaborative multi-reviewer features | 🔄 | Multiple reviewers per stage exist; no real-time collaboration |
 
 ---
@@ -110,12 +111,12 @@
 | 5.1 | Real-time status dashboard (submitter) | ✅ | Student dashboard with status badges |
 | 5.2 | Timeline view of review stages | ✅ | `GET /submissions/{id}/timeline` rendered in detail view |
 | 5.3 | Audit / activity log per submission | ✅ | `GET /submissions/{id}/audit-log`; 📋 Log button in all panels; 10 event types tracked |
-| 5.4 | Email notifications (status changes, decisions) | ✅ | `wp_mail()` for confirmation + stage reviewer alerts |
+| 5.4 | Email notifications (status changes, decisions) | ✅ | `wp_mail()` for confirmation + stage reviewer alerts; SMTP configurable via Portal Settings (host, port, encryption, auth, from address) |
 | 5.5 | In-app notification centre | ✅ | `GET /notifications` — pending review / revision alerts |
-| 5.6 | Configurable notification preferences | ❌ | Not implemented |
-| 5.7 | Automatic deadline reminder emails | ❌ | Not implemented |
-| 5.8 | Escalation notifications | ❌ | Not implemented |
-| 5.9 | Estimated completion dates | ❌ | Not implemented |
+| 5.6 | Configurable notification preferences | ❌ | Not implemented — Sprint 7 |
+| 5.7 | Automatic deadline reminder emails | ✅ | Daily WP-Cron `rrp_deadline_reminders`; emails reviewer 3 days before stage deadline |
+| 5.8 | Escalation notifications | ✅ | Daily WP-Cron `rrp_escalation_check`; emails coordinator list of overdue submissions |
+| 5.9 | Estimated completion dates | ✅ | Student dashboard shows estimated completion date per in-progress submission based on remaining stages × avg days |
 
 ---
 
@@ -124,7 +125,7 @@
 | # | Requirement | Status | Notes |
 |---|---|---|---|
 | 6.1 | Coordinator dashboard with all submissions | ✅ | Filter by All / Unassigned / In Review / Approved |
-| 6.2 | Submission filtering & search | 🔄 | Tab-based filter; free-text search not implemented |
+| 6.2 | Submission filtering & search | ✅ | Tab-based status/type filter + free-text search box (title, ID, submitter name) in coordinator and student dashboards |
 | 6.3 | Reviewer assignment UI (per stage) | ✅ | Assignment panel with pool suggest |
 | 6.4 | Bulk reviewer assignment from pool | ✅ | `POST /config/apply-pool-to-submissions` |
 | 6.5 | System configuration UI (stages, pools, programs, departments) | ✅ | Coordinator → Program Management card |
@@ -133,9 +134,9 @@
 | 6.8 | Submission trend analysis | ✅ | `GET /analytics/daily` (90-day rolling) |
 | 6.9 | Export CSV / XLSX | ✅ | `GET /reports/export` + client-side XLSX download |
 | 6.10 | Audit trail (per submission) | ✅ | See §5.3 |
-| 6.11 | Bulk status updates | ❌ | Not implemented |
+| 6.11 | Bulk status updates | N/A | Removed — not required |
 | 6.12 | Overdue submissions view | ✅ | Coordinator → Overdue tab |
-| 6.13 | Conflict of interest tracking | ❌ | Not implemented |
+| 6.13 | Conflict of interest tracking | ✅ | COI Declarations panel in coordinator/admin sidebar; full list with submission ID, reviewer, and reason |
 
 ---
 
@@ -143,13 +144,13 @@
 
 | # | Requirement | Status | Notes |
 |---|---|---|---|
-| 7.1 | Configurable review deadlines per stage | 🔄 | Deadline calculation in `calculate_stage_deadline()`; not editable from UI |
+| 7.1 | Configurable review deadlines per stage | ✅ | `stageDueDays` per submission type editable per stage in Submission Types editor (inline day-count field per stage row); saved via `PUT /config` |
 | 7.2 | Automatic deadline calculation from submission date | ✅ | Days-per-stage from config |
-| 7.3 | Grace period / escalation | ❌ | Not implemented |
-| 7.4 | Weekend / holiday consideration | ❌ | Not implemented |
-| 7.5 | Extension requests | ❌ | Not implemented |
-| 7.6 | Calendar view (deadline calendar) | ❌ | Not implemented |
-| 7.7 | Personal calendar sync (Google / Outlook) | ❌ | Not implemented |
+| 7.3 | Grace period / escalation | ✅ | Configurable grace period (days) in Portal Settings → Deadline Options; `get_grace_period_seconds()` applied in overdue detection and escalation emails |
+| 7.4 | Weekend / holiday consideration | ✅ | Skip Weekends toggle + Public Holidays list in Portal Settings → Deadline Options; `calculate_stage_deadline()` counts only working days; extension approvals also skip weekends/holidays |
+| 7.5 | Extension requests | ✅ | Reviewer can submit extension request (stage, reason, extra days) from decision form; coordinators see all requests under Extension Requests panel with Approve/Deny; approved extensions set `extensionDeadline`; email notifications to both parties |
+| 7.6 | Calendar view (deadline calendar) | ❌ | Not implemented — Sprint 7 |
+| 7.7 | Personal calendar sync (Google / Outlook) | ❌ | Not implemented — Sprint 7 |
 
 ---
 
@@ -165,30 +166,32 @@
 | 8.6 | Real MIME-type verification on upload | ✅ | `finfo_file()` check |
 | 8.7 | REST API nonce authentication | ✅ | `wp_create_nonce('wp_rest')` |
 | 8.8 | Role / capability checks on every endpoint | ✅ | `permission_callback` on all routes |
-| 8.9 | SSL/TLS | 🔄 | Azure VM; HTTPS not configured on current test env |
+| 8.9 | SSL/TLS | ✅ | Let's Encrypt certificate active on Azure VM; all traffic served over HTTPS |
 | 8.10 | Data backup / recovery | ❌ | JSON files only; no automated backup |
 | 8.11 | REST API for external integrations | ✅ | Full REST surface exposed |
 | 8.12 | mammoth.js DOCX inline viewer | ✅ | Enqueued as WP script dependency |
+| 8.13 | Configurable SMTP for outgoing email | ✅ | Admin-configurable in Portal Settings → Email / SMTP fieldset; host, port, SSL/STARTTLS/None, auth credentials, from name + address; password encrypted AES-256-GCM; `POST /settings/test-email` verifies settings; `phpmailer_init` hook configures PHPMailer on every `wp_mail()` call |
 
 ---
 
 ## 9. Pending / Future Work (priority order)
 
-1. **Microsoft Entra ID SSO** — integrate WP OAuth plugin for university SSO
-2. **Automated deadline reminder emails** — WP-Cron job to email reviewers N days before deadline
-3. **Escalation notifications** — coordinator alert when review is overdue
-4. **Free-text search** across submission title / author / ID
-5. **Bulk status updates** for coordinators
-6. **Conflict of interest declaration** — reviewer self-declares before starting review
-7. **Expertise-based / workload-based reviewer auto-assignment**
-8. **Rich text feedback editor** (TipTap or TinyMCE)
-9. **Deadline edit UI** (coordinator sets per-submission stage deadlines)
-10. **Calendar view & personal calendar sync**
-11. **Scoring / rating system** for quantitative review criteria
-12. **Extension request workflow** for reviewers
-13. **HTTPS configuration** on Azure VM
-14. **Automated JSON backup** (WP-Cron → copy to Azure Blob or similar)
-15. **Configurable notification preferences** per user
+1. ~~**Microsoft Entra ID SSO**~~ ✅ Implemented
+2. ~~**Automated deadline reminder emails**~~ ✅ Implemented
+3. ~~**Escalation notifications**~~ ✅ Implemented
+4. ~~**Free-text search** across submission title / author / ID~~ ✅ Implemented
+5. ~~**Bulk status updates**~~ — Removed (not required)
+6. ~~**Conflict of interest declaration**~~ ✅ Implemented (reviewer + coordinator view)
+7. ~~**Expertise-based / workload-based reviewer auto-assignment**~~ ✅ Implemented
+8. ~~**Rich text feedback editor**~~ ✅ Implemented (Quill.js, stored as HTML, sanitized on display)
+9. ~~**Deadline edit UI**~~ ✅ Implemented in Portal Settings
+10. **Calendar view & personal calendar sync** — Sprint 7
+11. ~~**Scoring / rating system**~~ ✅ Implemented
+12. ~~**Extension request workflow** for reviewers~~ ✅ Implemented (7.5)
+13. ~~**HTTPS configuration**~~ ✅ Active (Let's Encrypt)
+14. **Automated JSON backup** (WP-Cron → Azure Blob) — Sprint 8
+15. **Configurable notification preferences** per user — Sprint 7
+16. ~~**Configurable SMTP / outgoing email**~~ ✅ Implemented (Portal Settings → Email / SMTP; test-email endpoint; AES-256-GCM password encryption)
 
 ---
 
@@ -196,13 +199,14 @@
 
 | Item | Value |
 |---|---|
-| VM | `deployvm.cityu.edu` |
-| WP admin | `admin` / `admin123` |
+| VM | `rcgapimtest.eastus2.cloudapp.azure.com` |
+| WP admin | `admin` / `admin123` (default fallback — disabled when real rrp_admin users exist) |
 | VM user | `azureadmin` / `Microsoft12345` |
-| Plugin path (VM) | `/mnt/c/Development/CityU-Research-Tracker` |
+| Plugin path (VM) | `/var/www/html/wp-content/plugins/research-review-portal/` |
 | Local path | `d:\Development\CityU-Research-Tracker` |
-| Health endpoint | `GET /wp-json/research-portal/v1/health` |
+| Health endpoint | `GET /wp-json/rrp/v1/health` |
 | ClamAV | `/usr/bin/clamscan` v1.4.3, defs 27940 |
+| JS syntax check | `node --check assets/portal.js` — exit 0 (verified March 17, 2026) |
 
 
 ### 10. Implementation Priorities

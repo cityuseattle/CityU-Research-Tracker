@@ -1045,14 +1045,36 @@ a{text-decoration:none;color:inherit}
 		add_filter( 'redirect_canonical',  array( 'Research_Review_Portal', 'no_localhost_redirect' ), 1, 2 );
 	}
 
-	add_action( 'rrp_daily_report', array( 'Portal_REST', 'scheduled_report' ) );
+	add_action( 'rrp_daily_report',       array( 'Portal_REST', 'scheduled_report' ) );
+	add_action( 'rrp_deadline_reminders', array( 'Portal_REST', 'send_deadline_reminders' ) );
+	add_action( 'rrp_escalation_check',   array( 'Portal_REST', 'send_escalation_emails' ) );
+	add_action( 'phpmailer_init',         array( 'Portal_REST', 'configure_phpmailer' ) );
 
 	register_activation_hook( __FILE__, function() {
 		if ( ! wp_next_scheduled( 'rrp_daily_report' ) ) {
 			wp_schedule_event( time(), 'daily', 'rrp_daily_report' );
 		}
+		if ( ! wp_next_scheduled( 'rrp_deadline_reminders' ) ) {
+			wp_schedule_event( time(), 'daily', 'rrp_deadline_reminders' );
+		}
+		if ( ! wp_next_scheduled( 'rrp_escalation_check' ) ) {
+			wp_schedule_event( time(), 'daily', 'rrp_escalation_check' );
+		}
 	} );
 
 	register_deactivation_hook( __FILE__, function() {
 		wp_clear_scheduled_hook( 'rrp_daily_report' );
+		wp_clear_scheduled_hook( 'rrp_deadline_reminders' );
+		wp_clear_scheduled_hook( 'rrp_escalation_check' );
+	} );
+
+	// Auto-schedule new cron jobs on every load if not already registered
+	// (handles upgrades without requiring plugin re-activation).
+	add_action( 'init', function () {
+		if ( ! wp_next_scheduled( 'rrp_deadline_reminders' ) ) {
+			wp_schedule_event( time(), 'daily', 'rrp_deadline_reminders' );
+		}
+		if ( ! wp_next_scheduled( 'rrp_escalation_check' ) ) {
+			wp_schedule_event( time(), 'daily', 'rrp_escalation_check' );
+		}
 	} );

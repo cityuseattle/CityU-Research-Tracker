@@ -498,6 +498,16 @@
 /* ── Feedback items ── */
 .rrp-portal .rrp-feedback-item { font-size: 0.88rem; border-left: 3px solid var(--rrp-border); padding: 0.35rem 0.75rem; margin-top: 0.4rem; background: #f9fafb; border-radius: 0 4px 4px 0; }
 .rrp-portal .rrp-feedback-meta { font-weight: 600; color: var(--rrp-primary); margin-right: 0.4rem; }
+.rrp-portal .rrp-feedback-body { display: inline; }
+.rrp-portal .rrp-feedback-body p { margin: 0.25rem 0; }
+.rrp-portal .rrp-feedback-body ul, .rrp-portal .rrp-feedback-body ol { margin: 0.25rem 0 0.25rem 1.25rem; padding: 0; }
+.rrp-portal .rrp-feedback-body blockquote { border-left: 3px solid #ccc; margin: 0.4rem 0; padding-left: 0.75rem; color: #555; }
+
+/* ── Quill editor inside portal ── */
+.rrp-portal .ql-container { font-family: inherit; font-size: 0.9rem; }
+.rrp-portal .ql-toolbar.ql-snow { border-radius: 4px 4px 0 0; background: #f9fafb; border-color: var(--rrp-border); }
+.rrp-portal .ql-container.ql-snow { border-radius: 0 0 4px 4px; border-color: var(--rrp-border); min-height: 120px; }
+.rrp-portal #rrp-feedback-editor .ql-editor { min-height: 100px; }
 
 /* ── Type badge ── */
 .rrp-portal .rrp-type-badge { display: inline-block; background: var(--rrp-primary); color: #fff; font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; vertical-align: middle; margin-left: 0.4rem; }

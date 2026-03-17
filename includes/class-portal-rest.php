@@ -117,7 +117,7 @@ class Portal_REST {
 		register_rest_route( self::NAMESPACE, '/conflicts', array(
 			'methods'             => 'POST',
 			'callback'            => array( __CLASS__, 'declare_conflict' ),
-			'permission_callback' => array( __CLASS__, 'can_manage_workflow' ),
+			'permission_callback' => 'is_user_logged_in',
 		) );
 		register_rest_route( self::NAMESPACE, '/config/review-templates', array(
 			'methods'             => 'GET',
@@ -244,6 +244,30 @@ class Portal_REST {
 			'permission_callback' => array( __CLASS__, 'can_view_submission' ),
 			'args'                => array( 'id' => array( 'required' => true ) ),
 		) );
+		// Extension requests (reviewer submits → coordinator approves/denies)
+		register_rest_route( self::NAMESPACE, '/submissions/(?P<id>[a-zA-Z0-9\-]+)/request-extension', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'extension_request' ),
+			'permission_callback' => array( __CLASS__, 'can_provide_feedback' ),
+			'args'                => array( 'id' => array( 'required' => true ) ),
+		) );
+		register_rest_route( self::NAMESPACE, '/submissions/(?P<id>[a-zA-Z0-9\-]+)/extension-requests/(?P<reqId>[a-zA-Z0-9\-]+)/approve', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'extension_approve' ),
+			'permission_callback' => array( __CLASS__, 'can_manage_workflow' ),
+			'args'                => array( 'id' => array( 'required' => true ), 'reqId' => array( 'required' => true ) ),
+		) );
+		register_rest_route( self::NAMESPACE, '/submissions/(?P<id>[a-zA-Z0-9\-]+)/extension-requests/(?P<reqId>[a-zA-Z0-9\-]+)/deny', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'extension_deny' ),
+			'permission_callback' => array( __CLASS__, 'can_manage_workflow' ),
+			'args'                => array( 'id' => array( 'required' => true ), 'reqId' => array( 'required' => true ) ),
+		) );
+		register_rest_route( self::NAMESPACE, '/extension-requests', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'extension_requests_list' ),
+			'permission_callback' => array( __CLASS__, 'can_manage_workflow' ),
+		) );
 		register_rest_route( self::NAMESPACE, '/analytics/overdue', array(
 			'methods'             => 'GET',
 			'callback'            => array( __CLASS__, 'analytics_overdue' ),
@@ -313,6 +337,11 @@ class Portal_REST {
 		register_rest_route( self::NAMESPACE, '/settings', array(
 			'methods'             => 'PUT',
 			'callback'            => array( __CLASS__, 'portal_settings_update' ),
+			'permission_callback' => array( __CLASS__, 'can_manage_config' ),
+		) );
+		register_rest_route( self::NAMESPACE, '/settings/test-email', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'portal_settings_test_email' ),
 			'permission_callback' => array( __CLASS__, 'can_manage_config' ),
 		) );
 		// OAuth2 redirect callback for Microsoft Entra SSO (public — no auth required)
@@ -733,17 +762,42 @@ class Portal_REST {
 	}
 
 	public static function conflicts_list( WP_REST_Request $request ) {
-		return new WP_REST_Response( Portal_Data::get_conflict_of_interest_records(), 200 );
+		$raw  = Portal_Data::get_conflict_of_interest_records();
+		$flat = array();
+		// Stored as conflictOfInterest[submissionId][reviewerEmail] — flatten for the UI.
+		foreach ( (array) $raw as $sub_id => $by_email ) {
+			foreach ( (array) $by_email as $email => $record ) {
+				$flat[] = array(
+					'submissionId'  => $record['submissionId']  ?? $sub_id,
+					'reviewerEmail' => $record['reviewerEmail'] ?? $email,
+					'reason'        => $record['reason']        ?? '',
+					'declaredAt'    => $record['timestamp']     ?? null,
+				);
+			}
+		}
+		return new WP_REST_Response( array( 'conflicts' => $flat ), 200 );
 	}
 
 	public static function declare_conflict( WP_REST_Request $request ) {
 		$body = $request->get_json_params() ?: $request->get_body_params();
-		$reviewer_email = isset( $body['reviewerEmail'] ) ? trim( (string) $body['reviewerEmail'] ) : '';
-		$submission_id = isset( $body['submissionId'] ) ? trim( (string) $body['submissionId'] ) : '';
-		$reason = isset( $body['reason'] ) ? trim( (string) $body['reason'] ) : '';
+		$reviewer_email = isset( $body['reviewerEmail'] ) ? strtolower( trim( (string) $body['reviewerEmail'] ) ) : '';
+		$submission_id  = isset( $body['submissionId'] )  ? trim( (string) $body['submissionId'] )  : '';
+		$reason         = isset( $body['reason'] )        ? trim( (string) $body['reason'] )        : '';
+
 		if ( ! $reviewer_email || ! $submission_id || ! $reason ) {
 			return new WP_REST_Response( array( 'error' => 'reviewerEmail, submissionId, and reason are required.' ), 400 );
 		}
+
+		// Non-coordinators / non-admins can only declare on their own behalf.
+		$current_user = wp_get_current_user();
+		$is_privileged = current_user_can( 'rrp_manage_workflow' ) || current_user_can( 'rrp_full_admin_access' );
+		if ( ! $is_privileged ) {
+			$my_email = strtolower( trim( $current_user->user_email ) );
+			if ( $my_email !== $reviewer_email ) {
+				return new WP_REST_Response( array( 'error' => 'You may only declare a conflict for your own account.' ), 403 );
+			}
+		}
+
 		$record = Portal_Data::declare_conflict_of_interest( $reviewer_email, $submission_id, $reason );
 		return new WP_REST_Response( $record, 201 );
 	}
@@ -831,11 +885,24 @@ class Portal_REST {
 
 	public static function submit( WP_REST_Request $request ) {
 		$body = $request->get_json_params() ?: $request->get_body_params();
-		$type = isset( $body['type'] ) ? strtolower( trim( (string) $body['type'] ) ) : '';
-		$allowed = array( 'conference', 'publication', 'student-project', 'grant' );
-		if ( ! in_array( $type, $allowed, true ) ) {
+		// Accept the authoritative type from submissionType (set by the form) or type.
+		// submissionType is the canonical config-defined id; type is kept in sync.
+		$sub_type_field = isset( $body['submissionType'] ) ? strtolower( trim( (string) $body['submissionType'] ) ) : '';
+		$type_field     = isset( $body['type'] )           ? strtolower( trim( (string) $body['type'] ) )           : '';
+		$type = $sub_type_field ?: $type_field;
+		if ( empty( $type ) ) {
+			return new WP_REST_Response( array( 'success' => false, 'error' => 'Submission type is required.' ), 400 );
+		}
+		// Validate against dynamically configured types (config.json) plus the legacy hardcoded set.
+		$config_types  = array_column( Portal_Data::get_submission_types(), 'id' );
+		$legacy_types  = array( 'conference', 'publication', 'student-project', 'grant' );
+		$allowed_types = array_unique( array_merge( $config_types, $legacy_types ) );
+		if ( ! in_array( $type, $allowed_types, true ) ) {
 			return new WP_REST_Response( array( 'success' => false, 'error' => 'Invalid submission type.' ), 400 );
 		}
+		// Always store type == submissionType so both fields agree.
+		$body['type']           = $type;
+		$body['submissionType'] = $type;
 		$is_draft = isset( $body['status'] ) && strtolower( trim( (string) $body['status'] ) ) === 'draft';
 		$errors = $is_draft ? array() : Portal_Data::validate_submission( $type, $body );
 		if ( ! empty( $errors ) ) {
@@ -960,6 +1027,137 @@ class Portal_REST {
 			wp_mail( $admin_email, $subject, $message );
 		}
 		return true;
+	}
+
+	// ─── Deadline reminder emails (2 days before due date) ────────────────────
+
+	public static function send_deadline_reminders() {
+		$data    = Portal_Data::read_submissions();
+		$now     = time();
+		$window  = 2 * DAY_IN_SECONDS;
+		$changed = false;
+
+		foreach ( $data['submissions'] as &$sub ) {
+			$status = strtolower( $sub['status'] ?? '' );
+			if ( in_array( $status, array( 'approved', 'published', 'rejected', 'withdrawn' ), true ) ) {
+				continue;
+			}
+			foreach ( ( $sub['reviewStages'] ?? array() ) as $i => &$stage ) {
+				if ( Portal_Data::is_stage_approved( $stage ) || ( $stage['skipped'] ?? false ) ) {
+					continue;
+				}
+				if ( ! empty( $stage['reminderSentAt'] ) ) {
+					continue; // already reminded this round
+				}
+				$deadline_ts = strtotime( Portal_Data::get_effective_deadline( $sub, $i ) );
+				if ( ! $deadline_ts ) continue;
+				$time_left = $deadline_ts - $now;
+				if ( $time_left <= 0 || $time_left > $window ) continue;
+
+				$stage_name = $stage['stageName'] ?? ( 'Stage ' . ( $i + 1 ) );
+				$due_str    = gmdate( 'Y-m-d', $deadline_ts );
+				$days_left  = (int) ceil( $time_left / DAY_IN_SECONDS );
+				$subject    = '[Research Portal] Reminder: Review due in ' . $days_left . ' day(s) — ' . ( $sub['id'] ?? '' );
+				$body       = "This is a reminder that your review is due soon.\n\n"
+				            . 'Submission : ' . ( $sub['title'] ?? $sub['id'] ?? '' ) . "\n"
+				            . 'ID         : ' . ( $sub['id'] ?? '' ) . "\n"
+				            . 'Stage      : ' . $stage_name . "\n"
+				            . 'Due Date   : ' . $due_str . "\n\n"
+				            . 'Please log in to the Research Review Portal to complete your review.';
+
+				foreach ( ( $stage['reviewers'] ?? array() ) as $r ) {
+					$email = trim( (string) ( $r['email'] ?? '' ) );
+					if ( $email && is_email( $email ) ) {
+						wp_mail( $email, $subject, $body );
+					}
+				}
+				$stage['reminderSentAt'] = gmdate( 'c' );
+				$changed = true;
+			}
+			unset( $stage );
+		}
+		unset( $sub );
+		if ( $changed ) {
+			Portal_Data::write_submissions( $data );
+		}
+	}
+
+	// ─── Escalation emails (after due date passes) ────────────────────────────
+
+	public static function send_escalation_emails() {
+		$data    = Portal_Data::read_submissions();
+		$now     = time();
+		$changed = false;
+
+		// Coordinator + admin emails.
+		$coord_users  = get_users( array( 'role__in' => array( 'rrp_coordinator', 'rrp_admin' ), 'number' => -1, 'fields' => array( 'user_email' ) ) );
+		$coord_emails = array_values( array_filter( array_column( $coord_users, 'user_email' ), 'is_email' ) );
+
+		// Faculty / program director emails.
+		$dir_users    = get_users( array( 'role' => 'rrp_faculty', 'number' => -1, 'fields' => array( 'user_email' ) ) );
+		$dir_emails   = array_values( array_filter( array_column( $dir_users, 'user_email' ), 'is_email' ) );
+
+		foreach ( $data['submissions'] as &$sub ) {
+			$status = strtolower( $sub['status'] ?? '' );
+			if ( in_array( $status, array( 'approved', 'published', 'rejected', 'withdrawn' ), true ) ) {
+				continue;
+			}
+			$submitter_email = trim( (string) ( $sub['submitterEmail'] ?? '' ) );
+
+			foreach ( ( $sub['reviewStages'] ?? array() ) as $i => &$stage ) {
+				if ( Portal_Data::is_stage_approved( $stage ) || ( $stage['skipped'] ?? false ) ) {
+					continue;
+				}
+				$deadline_ts  = strtotime( Portal_Data::get_effective_deadline( $sub, $i ) );
+				$grace        = Portal_Data::get_grace_period_seconds();
+				if ( ! $deadline_ts || $now <= ( $deadline_ts + $grace ) ) continue;
+
+				// Re-escalate every 3 days to avoid daily spam.
+				if ( ! empty( $stage['escalationSentAt'] ) ) {
+					$last = strtotime( $stage['escalationSentAt'] );
+					if ( $last && ( $now - $last ) < 3 * DAY_IN_SECONDS ) continue;
+				}
+
+				$stage_name    = $stage['stageName'] ?? ( 'Stage ' . ( $i + 1 ) );
+				$overdue_days  = (int) ceil( ( $now - $deadline_ts ) / DAY_IN_SECONDS );
+				$due_str       = gmdate( 'Y-m-d', $deadline_ts );
+				$reviewer_emails = array_values( array_filter(
+					array_column( $stage['reviewers'] ?? array(), 'email' ), 'is_email'
+				) );
+
+				$to_emails = array_values( array_unique( array_merge(
+					$reviewer_emails, $coord_emails, $dir_emails
+				) ) );
+				$headers = array();
+				if ( $submitter_email && is_email( $submitter_email ) ) {
+					$headers[] = 'Cc: ' . $submitter_email;
+				}
+
+				$subject = '[Research Portal] ESCALATION: Overdue ' . $overdue_days . 'd — ' . ( $sub['id'] ?? '' );
+				$body    = "ESCALATION NOTICE\n\n"
+				         . "The review stage below is overdue and requires immediate attention.\n\n"
+				         . 'Submission  : ' . ( $sub['title'] ?? $sub['id'] ?? '' ) . "\n"
+				         . 'ID          : ' . ( $sub['id'] ?? '' ) . "\n"
+				         . 'Stage       : ' . $stage_name . "\n"
+				         . 'Due Date    : ' . $due_str . "\n"
+				         . 'Overdue by  : ' . $overdue_days . " day(s)\n"
+				         . 'Reviewers   : ' . ( $reviewer_emails ? implode( ', ', $reviewer_emails ) : 'None assigned' ) . "\n\n"
+				         . 'Please log in to the Research Review Portal to address this immediately.';
+
+				foreach ( $to_emails as $email ) {
+					if ( is_email( $email ) ) {
+						wp_mail( $email, $subject, $body, $headers );
+					}
+				}
+				$stage['escalationSentAt'] = gmdate( 'c' );
+				$changed = true;
+			}
+			unset( $stage );
+		}
+		unset( $sub );
+		if ( $changed ) {
+			Portal_Data::write_submissions( $data );
+		}
 	}
 
 	public static function submissions_list( WP_REST_Request $request ) {
@@ -1794,6 +1992,37 @@ class Portal_REST {
 		if ( isset( $body['submissionTypes'] ) && is_array( $body['submissionTypes'] ) ) {
 			$config['submissionTypes'] = $body['submissionTypes'];
 		}
+		// Per-stage deadline days: stageDueDays[typeId][stageName] = int
+		if ( isset( $body['stageDueDays'] ) && is_array( $body['stageDueDays'] ) ) {
+			$sdd = array();
+			foreach ( $body['stageDueDays'] as $type_id => $stage_map ) {
+				$tid = sanitize_key( (string) $type_id );
+				if ( is_array( $stage_map ) ) {
+					$sdd[ $tid ] = array();
+					foreach ( $stage_map as $sname => $days ) {
+						$sdd[ $tid ][ sanitize_text_field( (string) $sname ) ] = max( 1, (int) $days );
+					}
+				} elseif ( is_numeric( $stage_map ) ) {
+					$sdd[ $tid ] = max( 1, (int) $stage_map );
+				}
+			}
+			$config['stageDueDays'] = $sdd;
+		}
+		// Deadline options: skipWeekends, gracePeriodDays, publicHolidays
+		if ( isset( $body['deadlineOptions'] ) && is_array( $body['deadlineOptions'] ) ) {
+			$opts = $body['deadlineOptions'];
+			$config['deadlineOptions'] = array(
+				'skipWeekends'    => ! empty( $opts['skipWeekends'] ),
+				'gracePeriodDays' => max( 0, (int) ( $opts['gracePeriodDays'] ?? 2 ) ),
+				'publicHolidays'  => array_values( array_filter( array_map(
+					function ( $d ) {
+						$s = sanitize_text_field( (string) $d );
+						return preg_match( '/^\d{4}-\d{2}-\d{2}$/', $s ) ? $s : '';
+					},
+					(array) ( $opts['publicHolidays'] ?? array() )
+				) ) ),
+			);
+		}
 		Portal_Data::write_config( $config );
 		return new WP_REST_Response( $config, 200 );
 	}
@@ -2062,12 +2291,18 @@ class Portal_REST {
 		$stages    = $sub['reviewStages'] ?? array();
 		$deadlines = array();
 		foreach ( $stages as $i => $stage ) {
+			$calculated  = Portal_Data::calculate_stage_deadline( $sub, $i );
+			$effective   = Portal_Data::get_effective_deadline( $sub, $i );
+			$ext_request = $stage['extensionRequest'] ?? null;
 			$deadlines[] = array(
-				'stageName'  => $stage['stageName'] ?? '',
-				'stageIndex' => $i,
-				'deadline'   => Portal_Data::calculate_stage_deadline( $sub, $i ),
-				'approved'   => Portal_Data::is_stage_approved( $stage ),
-				'skipped'    => $stage['skipped'] ?? false,
+				'stageName'         => $stage['stageName'] ?? '',
+				'stageIndex'        => $i,
+				'deadline'          => $effective,
+				'calculatedDeadline'=> $calculated,
+				'extended'          => ! empty( $stage['extensionApproved'] ),
+				'extensionRequest'  => $ext_request,
+				'approved'          => Portal_Data::is_stage_approved( $stage ),
+				'skipped'           => $stage['skipped'] ?? false,
 			);
 		}
 		return new WP_REST_Response( array( 'id' => $id, 'deadlines' => $deadlines ), 200 );
@@ -2614,4 +2849,325 @@ class Portal_REST {
 		}
 		return new WP_REST_Response( RRP_Portal_Settings::get_all( true ), 200 );
 	}
+
+	/**
+	 * Configure PHPMailer with stored SMTP settings.
+	 * Hooked to WordPress's 'phpmailer_init' action.
+	 *
+	 * @param \PHPMailer\PHPMailer\PHPMailer $phpmailer  PHPMailer instance (passed by WP by reference).
+	 */
+	public static function configure_phpmailer( $phpmailer ) {
+		if ( ! class_exists( 'RRP_Portal_Settings' ) ) {
+			return;
+		}
+		if ( ! RRP_Portal_Settings::get( 'smtp_enabled' ) ) {
+			return;
+		}
+		$host       = (string) RRP_Portal_Settings::get( 'smtp_host' );
+		if ( empty( $host ) ) {
+			return;
+		}
+		$port       = (int)    RRP_Portal_Settings::get( 'smtp_port' );
+		$encryption = (string) RRP_Portal_Settings::get( 'smtp_encryption' );
+		$auth       = (bool)   RRP_Portal_Settings::get( 'smtp_auth' );
+		$user       = (string) RRP_Portal_Settings::get( 'smtp_user' );
+		$password   = (string) RRP_Portal_Settings::get( 'smtp_password' );
+		$from_name  = (string) RRP_Portal_Settings::get( 'smtp_from_name' );
+		$from_email = (string) RRP_Portal_Settings::get( 'smtp_from_email' );
+
+		$phpmailer->isSMTP();
+		$phpmailer->Host     = $host;
+		$phpmailer->Port     = $port > 0 ? $port : 587;
+		$phpmailer->SMTPAuth = $auth;
+		if ( $auth ) {
+			$phpmailer->Username = $user;
+			$phpmailer->Password = $password;
+		}
+		if ( 'ssl' === $encryption ) {
+			$phpmailer->SMTPSecure = 'ssl';
+		} elseif ( 'tls' === $encryption ) {
+			$phpmailer->SMTPSecure = 'tls';
+		} else {
+			$phpmailer->SMTPSecure = '';
+			$phpmailer->SMTPAutoTLS = false;
+		}
+		if ( $from_email && is_email( $from_email ) ) {
+			$phpmailer->From     = $from_email;
+			$phpmailer->FromName = $from_name ?: $from_email;
+			try {
+				$phpmailer->setFrom( $from_email, $from_name ?: $from_email, false );
+			} catch ( \Exception $e ) {
+				// Silently ignore — From already set above.
+			}
+		}
+	}
+
+	/**
+	 * Send a test email to verify SMTP settings.
+	 * POST /settings/test-email   body: { "to": "recipient@example.com" }
+	 */
+	public static function portal_settings_test_email( WP_REST_Request $request ): WP_REST_Response {
+		$body = $request->get_json_params();
+		$to   = sanitize_email( (string) ( $body['to'] ?? '' ) );
+		if ( empty( $to ) ) {
+			$to = get_option( 'admin_email' );
+		}
+		if ( ! is_email( $to ) ) {
+			return new WP_REST_Response( array( 'error' => 'Invalid recipient address.' ), 400 );
+		}
+
+		$subject = '[Research Portal] SMTP Test Email';
+		$message = "This is a test email sent from the Research Review Portal.\n\n"
+		         . "If you received this, your SMTP settings are configured correctly.\n\n"
+		         . "Sent: " . current_time( 'mysql' );
+		$headers = array( 'Content-Type: text/plain; charset=UTF-8' );
+
+		$sent = wp_mail( $to, $subject, $message, $headers );
+
+		if ( $sent ) {
+			return new WP_REST_Response( array( 'message' => 'Test email sent to ' . $to . '.' ), 200 );
+		}
+
+		// Try to surface the PHPMailer error
+		global $phpmailer;
+		$detail = '';
+		if ( isset( $phpmailer ) && is_object( $phpmailer ) && ! empty( $phpmailer->ErrorInfo ) ) {
+			$detail = $phpmailer->ErrorInfo;
+		}
+		$error = $detail ?: 'wp_mail() returned false. Check SMTP host, port, credentials, and encryption settings.';
+		return new WP_REST_Response( array( 'error' => $error ), 502 );
+	}
+
+	// ─── Extension Requests ───────────────────────────────────────────────────
+
+	/**
+	 * Reviewer requests a deadline extension for one of their assigned stages.
+	 * POST /submissions/{id}/request-extension
+	 * Body: { stageName, reason, requestedDays }
+	 */
+	public static function extension_request( WP_REST_Request $request ): WP_REST_Response {
+		$id         = $request->get_param( 'id' );
+		$body       = $request->get_json_params() ?: array();
+		$stage_name = sanitize_text_field( (string) ( $body['stageName'] ?? '' ) );
+		$reason     = sanitize_textarea_field( (string) ( $body['reason'] ?? '' ) );
+		$req_days   = max( 1, (int) ( $body['requestedDays'] ?? 7 ) );
+
+		if ( ! $stage_name || ! $reason ) {
+			return new WP_REST_Response( array( 'error' => 'stageName and reason are required.' ), 400 );
+		}
+
+		$data = Portal_Data::read_submissions();
+		$idx  = null;
+		foreach ( $data['submissions'] as $i => $s ) {
+			if ( ( $s['id'] ?? '' ) === $id ) { $idx = $i; break; }
+		}
+		if ( $idx === null ) {
+			return new WP_REST_Response( array( 'error' => 'Submission not found.' ), 404 );
+		}
+
+		$user_email = strtolower( trim( wp_get_current_user()->user_email ?? '' ) );
+		$sub        = $data['submissions'][ $idx ];
+		$stage_idx  = -1;
+		foreach ( $sub['reviewStages'] ?? array() as $si => $stage ) {
+			if ( strtolower( $stage['stageName'] ?? '' ) === strtolower( $stage_name ) ) {
+				// Verify requester is assigned to this stage
+				$assigned = array_filter( $stage['reviewers'] ?? array(), function ( $r ) use ( $user_email ) {
+					return strtolower( trim( (string) ( $r['email'] ?? '' ) ) ) === $user_email;
+				} );
+				if ( empty( $assigned ) ) {
+					return new WP_REST_Response( array( 'error' => 'You are not assigned to this stage.' ), 403 );
+				}
+				$stage_idx = $si;
+				break;
+			}
+		}
+		if ( $stage_idx < 0 ) {
+			return new WP_REST_Response( array( 'error' => 'Stage not found.' ), 404 );
+		}
+
+		$req_id = 'ext-' . substr( md5( uniqid( $id . $stage_name, true ) ), 0, 8 );
+		$ext_request = array(
+			'id'            => $req_id,
+			'requestedBy'   => $user_email,
+			'reason'        => $reason,
+			'requestedDays' => $req_days,
+			'status'        => 'pending',
+			'requestedAt'   => gmdate( 'c' ),
+		);
+
+		if ( ! isset( $data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest'] ) ) {
+			$data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest'] = $ext_request;
+		} else {
+			// Overwrite if previous request was denied (allow re-request)
+			$prev = $data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest'];
+			if ( ( $prev['status'] ?? '' ) === 'pending' ) {
+				return new WP_REST_Response( array( 'error' => 'A pending extension request already exists for this stage.' ), 409 );
+			}
+			$data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest'] = $ext_request;
+		}
+
+		self::append_audit_log( $data, $idx, 'extension_requested',
+			'Extension request submitted for stage "' . $stage_name . '" by ' . $user_email . ' (+' . $req_days . 'd).' );
+		Portal_Data::write_submissions( $data );
+
+		// Notify coordinators
+		$coord_users = get_users( array( 'role__in' => array( 'rrp_coordinator', 'rrp_admin' ), 'fields' => array( 'user_email' ) ) );
+		foreach ( $coord_users as $cu ) {
+			if ( is_email( $cu->user_email ) ) {
+				wp_mail( $cu->user_email,
+					'[Research Portal] Extension Request — ' . $id,
+					"A reviewer has requested a deadline extension.\n\nSubmission: " . ( $sub['title'] ?? $id ) .
+					"\nStage: $stage_name\nRequested by: $user_email\nExtra days: $req_days\nReason: $reason\n\nPlease log in to approve or deny." );
+			}
+		}
+
+		return new WP_REST_Response( array( 'message' => 'Extension request submitted.', 'requestId' => $req_id ), 200 );
+	}
+
+	/**
+	 * Coordinator approves an extension request.
+	 * POST /submissions/{id}/extension-requests/{reqId}/approve
+	 * Body: { extraDays }   (optional override; defaults to requester's requestedDays)
+	 */
+	public static function extension_approve( WP_REST_Request $request ): WP_REST_Response {
+		$id     = $request->get_param( 'id' );
+		$req_id = $request->get_param( 'reqId' );
+		$body   = $request->get_json_params() ?: array();
+
+		$data = Portal_Data::read_submissions();
+		$idx  = null;
+		foreach ( $data['submissions'] as $i => $s ) {
+			if ( ( $s['id'] ?? '' ) === $id ) { $idx = $i; break; }
+		}
+		if ( $idx === null ) {
+			return new WP_REST_Response( array( 'error' => 'Submission not found.' ), 404 );
+		}
+
+		$sub       = $data['submissions'][ $idx ];
+		$stage_idx = -1;
+		foreach ( $sub['reviewStages'] ?? array() as $si => $stage ) {
+			$er = $stage['extensionRequest'] ?? null;
+			if ( $er && ( $er['id'] ?? '' ) === $req_id ) { $stage_idx = $si; break; }
+		}
+		if ( $stage_idx < 0 ) {
+			return new WP_REST_Response( array( 'error' => 'Extension request not found.' ), 404 );
+		}
+
+		$er        = $data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest'];
+		$extra     = max( 1, (int) ( $body['extraDays'] ?? $er['requestedDays'] ?? 7 ) );
+		// Calculate extended deadline: base = current effective deadline + extra days
+		$base_ts   = strtotime( Portal_Data::get_effective_deadline( $sub, $stage_idx ) );
+		$new_ts    = $base_ts + ( $extra * DAY_IN_SECONDS );
+		$new_dl    = gmdate( 'c', $new_ts );
+
+		$data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest']['status']     = 'approved';
+		$data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest']['resolvedAt'] = gmdate( 'c' );
+		$data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionApproved']              = true;
+		$data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionDeadline']              = $new_dl;
+		// Reset reminder so a new one can be sent at the extended deadline
+		unset( $data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['reminderSentAt'] );
+
+		$stage_name = $data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['stageName'] ?? '';
+		self::append_audit_log( $data, $idx, 'extension_approved',
+			'Extension approved for stage "' . $stage_name . '". New deadline: ' . gmdate( 'Y-m-d', $new_ts ) . '.' );
+		Portal_Data::write_submissions( $data );
+
+		// Notify requester
+		$req_email = $er['requestedBy'] ?? '';
+		if ( is_email( $req_email ) ) {
+			wp_mail( $req_email,
+				'[Research Portal] Extension Approved — ' . $id,
+				"Your deadline extension request has been approved.\n\nSubmission: " . ( $sub['title'] ?? $id ) .
+				"\nStage: $stage_name\nNew deadline: " . gmdate( 'Y-m-d', $new_ts ) );
+		}
+
+		return new WP_REST_Response( array( 'message' => 'Extension approved.', 'extensionDeadline' => $new_dl ), 200 );
+	}
+
+	/**
+	 * Coordinator denies an extension request.
+	 * POST /submissions/{id}/extension-requests/{reqId}/deny
+	 * Body: { reason }
+	 */
+	public static function extension_deny( WP_REST_Request $request ): WP_REST_Response {
+		$id     = $request->get_param( 'id' );
+		$req_id = $request->get_param( 'reqId' );
+		$body   = $request->get_json_params() ?: array();
+		$reason = sanitize_textarea_field( (string) ( $body['reason'] ?? '' ) );
+
+		$data = Portal_Data::read_submissions();
+		$idx  = null;
+		foreach ( $data['submissions'] as $i => $s ) {
+			if ( ( $s['id'] ?? '' ) === $id ) { $idx = $i; break; }
+		}
+		if ( $idx === null ) {
+			return new WP_REST_Response( array( 'error' => 'Submission not found.' ), 404 );
+		}
+
+		$sub       = $data['submissions'][ $idx ];
+		$stage_idx = -1;
+		foreach ( $sub['reviewStages'] ?? array() as $si => $stage ) {
+			$er = $stage['extensionRequest'] ?? null;
+			if ( $er && ( $er['id'] ?? '' ) === $req_id ) { $stage_idx = $si; break; }
+		}
+		if ( $stage_idx < 0 ) {
+			return new WP_REST_Response( array( 'error' => 'Extension request not found.' ), 404 );
+		}
+
+		$er         = $data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest'];
+		$stage_name = $data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['stageName'] ?? '';
+
+		$data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest']['status']     = 'denied';
+		$data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest']['resolvedAt'] = gmdate( 'c' );
+		if ( $reason ) {
+			$data['submissions'][ $idx ]['reviewStages'][ $stage_idx ]['extensionRequest']['denyReason'] = $reason;
+		}
+
+		self::append_audit_log( $data, $idx, 'extension_denied',
+			'Extension denied for stage "' . $stage_name . '".' . ( $reason ? ' Reason: ' . $reason : '' ) );
+		Portal_Data::write_submissions( $data );
+
+		// Notify requester
+		$req_email = $er['requestedBy'] ?? '';
+		if ( is_email( $req_email ) ) {
+			wp_mail( $req_email,
+				'[Research Portal] Extension Request Denied — ' . $id,
+				"Your deadline extension request has been denied.\n\nSubmission: " . ( $sub['title'] ?? $id ) .
+				"\nStage: $stage_name" . ( $reason ? "\nReason: $reason" : '' ) );
+		}
+
+		return new WP_REST_Response( array( 'message' => 'Extension request denied.' ), 200 );
+	}
+
+	/**
+	 * List all pending extension requests across all submissions (coordinator view).
+	 * GET /extension-requests
+	 */
+	public static function extension_requests_list( WP_REST_Request $request ): WP_REST_Response {
+		$data    = Portal_Data::read_submissions();
+		$pending = array();
+		foreach ( $data['submissions'] as $sub ) {
+			foreach ( $sub['reviewStages'] ?? array() as $si => $stage ) {
+				$er = $stage['extensionRequest'] ?? null;
+				if ( ! $er ) continue;
+				$pending[] = array(
+					'submissionId'  => $sub['id'] ?? '',
+					'title'         => $sub['title'] ?? '',
+					'stageIndex'    => $si,
+					'stageName'     => $stage['stageName'] ?? '',
+					'currentDeadline' => Portal_Data::get_effective_deadline( $sub, $si ),
+					'request'       => $er,
+				);
+			}
+		}
+		// Sort: pending first, then by requestedAt desc
+		usort( $pending, function ( $a, $b ) {
+			$ap = ( $a['request']['status'] ?? '' ) === 'pending' ? 0 : 1;
+			$bp = ( $b['request']['status'] ?? '' ) === 'pending' ? 0 : 1;
+			if ( $ap !== $bp ) return $ap - $bp;
+			return strcmp( $b['request']['requestedAt'] ?? '', $a['request']['requestedAt'] ?? '' );
+		} );
+		return new WP_REST_Response( array( 'extensionRequests' => $pending ), 200 );
+	}
 }
+

@@ -99,5 +99,20 @@
     {"id":"ms-cybersecurity",         "label":"MS in Cybersecurity",                                                     "level":"masters",    "school":"Technology", "programDirectorId":"r4"},
     {"id":"ms-data-science",          "label":"MS in Data Science",                                                      "level":"masters",    "school":"Technology", "programDirectorId":"r4"},
     {"id":"dit",                      "label":"Doctor of Information Technology",                                        "level":"doctoral",   "school":"Technology", "programDirectorId":"r4"}
-  ]
+  ],
+  "stageDueDays": {
+    "conference":      {"Initial Screening":3,"Reviewer Assignment":3,"Peer Review":14,"Review Consolidation":7,"Final Decision":5,"Confirmation":3},
+    "publication":     {"Administrative Check":3,"Reviewer Matching":3,"Expert Review":14,"Director Assessment":7,"Final Decision":5,"Tracking":3},
+    "student-project": {"Advisor Matching":5,"Advisor Consultation":7,"Feasibility Check":7,"Director Approval":5,"Project Setup":5,"Milestone Tracking":14},
+    "grant":           {"Compliance Check":3,"Review Assignment":3,"Multi-Criteria Review":14,"Committee Meeting":7,"Final Decision":5,"Development Support":7,"Submission Tracking":7},
+    "dissertation":    {"Chair Review":7,"Committee Review":14,"Program Director Approval":7,"Dissertation Director Sign-Off":5},
+    "capstone":        {"Advisor Review":14,"Program Director Approval":7},
+    "research-paper":  {"Peer Review":14,"Program Director Approval":7},
+    "grant-proposal":  {"Multi-Criteria Review":14,"Program Director Approval":7}
+  },
+  "deadlineOptions": {
+    "skipWeekends": true,
+    "gracePeriodDays": 2,
+    "publicHolidays": []
+  }
 }

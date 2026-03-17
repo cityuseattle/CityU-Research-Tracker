@@ -132,13 +132,23 @@ class Portal_Data {
 		$key    = $type . '-' . $year;
 		$num    = ( isset( $data['nextIds'][ $key ] ) ? (int) $data['nextIds'][ $key ] : 0 ) + 1;
 		$data['nextIds'][ $key ] = $num;
-		$prefix = array(
+		$prefix_map = array(
 			'conference'      => 'ARS',
 			'publication'     => 'PUB',
 			'student-project' => 'PROJ',
 			'grant'           => 'GRN',
+			'dissertation'    => 'DIS',
+			'capstone'        => 'CAP',
+			'research-paper'  => 'RES',
+			'grant-proposal'  => 'GRP',
 		);
-		$prefix = isset( $prefix[ $type ] ) ? $prefix[ $type ] : 'SUB';
+		if ( isset( $prefix_map[ $type ] ) ) {
+			$prefix = $prefix_map[ $type ];
+		} else {
+			// Derive a 3-letter prefix from the type slug for any future dynamic type.
+			$slug   = strtoupper( preg_replace( '/[^a-zA-Z]/', '', $type ) );
+			$prefix = substr( $slug, 0, 3 ) ?: 'SUB';
+		}
 		self::write_submissions( $data );
 		return $prefix . '-' . $year . '-' . str_pad( (string) $num, 3, '0', STR_PAD_LEFT );
 	}
@@ -244,7 +254,23 @@ class Portal_Data {
 				}
 				break;
 			default:
-				$errors[] = 'Invalid submission type.';
+				// Dynamic type defined in config — validate the universal required fields.
+				if ( empty( trim( (string) ( $body['title'] ?? '' ) ) ) ) {
+					$errors[] = 'Title is required.';
+				}
+				if ( strlen( (string) ( $body['title'] ?? '' ) ) > 200 ) {
+					$errors[] = 'Title must be 200 characters or less.';
+				}
+				if ( empty( trim( (string) ( $body['submitterName'] ?? '' ) ) ) ) {
+					$errors[] = 'Submitter name is required.';
+				}
+				if ( empty( trim( (string) ( $body['submitterEmail'] ?? '' ) ) ) ) {
+					$errors[] = 'Email is required.';
+				}
+				if ( empty( trim( (string) ( $body['researchArea'] ?? '' ) ) ) ) {
+					$errors[] = 'Research area is required.';
+				}
+				break;
 		}
 		return $errors;
 	}
@@ -970,17 +996,111 @@ class Portal_Data {
 	}
 
 	/**
-	 * Calculate the due-date for a stage. Default: 7 days per stage from submission creation.
-	 * Config key: stageDueDays[type] (integer days).
+	 * Calculate the cumulative due-date for a stage.
+	 *
+	 * Config key: stageDueDays[type][stageName] = integer days (new per-stage format).
+	 * Falls back to stageDueDays[type] as a flat integer (legacy) or 7 days (default).
+	 *
+	 * The deadline is CUMULATIVE: stage N deadline = createdAt + sum(days for stages 0..N).
 	 */
 	public static function calculate_stage_deadline( $submission, $stage_index ) {
 		$created_ts = isset( $submission['createdAt'] ) ? strtotime( $submission['createdAt'] ) : time();
-		$type       = $submission['type'] ?? 'conference';
+		// Prefer submissionType (the true config-defined type) over type (legacy remapped field).
+		$type       = $submission['submissionType'] ?? $submission['type'] ?? 'conference';
 		$config     = self::read_config();
-		$days       = isset( $config['stageDueDays'][ $type ] ) ? (int) $config['stageDueDays'][ $type ] : 7;
-		$deadline_ts = $created_ts + ( ( $stage_index + 1 ) * $days * DAY_IN_SECONDS );
+
+		// Per-stage map: stageDueDays[type] is an array keyed by stageName.
+		$stage_map  = ( isset( $config['stageDueDays'][ $type ] ) && is_array( $config['stageDueDays'][ $type ] ) )
+		              ? (array) $config['stageDueDays'][ $type ]
+		              : array();
+
+		// Legacy flat integer fallback.
+		$flat_days  = ( isset( $config['stageDueDays'][ $type ] ) && ! is_array( $config['stageDueDays'][ $type ] ) )
+		              ? max( 1, (int) $config['stageDueDays'][ $type ] )
+		              : 7;
+
+		// Resolve stage names from reviewStages on the submission, or fall back to config type definition.
+		$stage_names = array();
+		if ( ! empty( $submission['reviewStages'] ) && is_array( $submission['reviewStages'] ) ) {
+			foreach ( $submission['reviewStages'] as $rs ) {
+				$stage_names[] = $rs['stageName'] ?? '';
+			}
+		}
+		if ( empty( $stage_names ) ) {
+			foreach ( ( $config['submissionTypes'] ?? array() ) as $st ) {
+				if ( ( $st['id'] ?? '' ) === $type ) {
+					$stage_names = $st['stages'] ?? array();
+					break;
+				}
+			}
+		}
+
+		// Sum days for stages 0 … stage_index (cumulative).
+		$total_days = 0;
+		for ( $i = 0; $i <= $stage_index; $i++ ) {
+			$stage_name = $stage_names[ $i ] ?? '';
+			if ( $stage_name && isset( $stage_map[ $stage_name ] ) ) {
+				$total_days += max( 1, (int) $stage_map[ $stage_name ] );
+			} else {
+				$total_days += $flat_days;
+			}
+		}
+
+		// Weekend / holiday skipping.
+		$opts         = $config['deadlineOptions'] ?? array();
+		$skip_wkends  = ! empty( $opts['skipWeekends'] );
+		$holidays     = isset( $opts['publicHolidays'] ) && is_array( $opts['publicHolidays'] )
+		                ? array_filter( $opts['publicHolidays'] ) : array();
+
+		$deadline_ts  = $created_ts;
+		$days_added   = 0;
+		while ( $days_added < $total_days ) {
+			$deadline_ts += DAY_IN_SECONDS;
+			$dow = (int) gmdate( 'N', $deadline_ts ); // 1=Mon … 7=Sun
+			if ( $skip_wkends && ( $dow === 6 || $dow === 7 ) ) {
+				continue; // skip Saturday / Sunday
+			}
+			$date_str = gmdate( 'Y-m-d', $deadline_ts );
+			if ( $holidays && in_array( $date_str, $holidays, true ) ) {
+				continue; // skip public holiday
+			}
+			$days_added++;
+		}
+
+		// Advance past any trailing weekend / holiday days so the deadline itself is a working day.
+		if ( $skip_wkends || $holidays ) {
+			$dow = (int) gmdate( 'N', $deadline_ts );
+			while ( ( $skip_wkends && ( $dow === 6 || $dow === 7 ) )
+			         || ( $holidays && in_array( gmdate( 'Y-m-d', $deadline_ts ), $holidays, true ) ) ) {
+				$deadline_ts += DAY_IN_SECONDS;
+				$dow = (int) gmdate( 'N', $deadline_ts );
+			}
+		}
+
 		return gmdate( 'c', $deadline_ts );
 	}
+
+	/**
+	 * Return the effective deadline for a stage, honouring any approved extension.
+	 * An approved extension stores `extensionDeadline` (ISO date) on the stage object.
+	 */
+	public static function get_effective_deadline( $submission, $stage_index ) {
+		$stage = $submission['reviewStages'][ $stage_index ] ?? null;
+		if ( $stage && ! empty( $stage['extensionDeadline'] ) && ! empty( $stage['extensionApproved'] ) ) {
+			return $stage['extensionDeadline'];
+		}
+		return self::calculate_stage_deadline( $submission, $stage_index );
+	}
+
+	/**
+	 * Return the grace period in seconds from config (default 2 days).
+	 */
+	public static function get_grace_period_seconds() {
+		$config = self::read_config();
+		$days   = (int) ( $config['deadlineOptions']['gracePeriodDays'] ?? 2 );
+		return max( 0, $days ) * DAY_IN_SECONDS;
+	}
+
 
 	/**
 	 * Return an array of all submissions / stages that are overdue.
@@ -989,6 +1109,7 @@ class Portal_Data {
 		$data    = self::read_submissions();
 		$subs    = $data['submissions'] ?? array();
 		$now     = time();
+		$grace   = self::get_grace_period_seconds();
 		$overdue = array();
 		foreach ( $subs as $sub ) {
 			$stages = $sub['reviewStages'] ?? array();
@@ -996,8 +1117,8 @@ class Portal_Data {
 				if ( self::is_stage_approved( $stage ) || ( $stage['skipped'] ?? false ) ) {
 					continue;
 				}
-				$deadline_ts = strtotime( self::calculate_stage_deadline( $sub, $i ) );
-				if ( $deadline_ts && $now > $deadline_ts ) {
+				$deadline_ts = strtotime( self::get_effective_deadline( $sub, $i ) );
+				if ( $deadline_ts && $now > ( $deadline_ts + $grace ) ) {
 					$overdue[] = array(
 						'submissionId' => $sub['id'] ?? '',
 						'title'        => $sub['title'] ?? '',

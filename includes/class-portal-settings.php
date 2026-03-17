@@ -58,6 +58,17 @@ class RRP_Portal_Settings {
 		'entra_client_secret'   => '',             // encrypted at rest
 		'entra_redirect_uri'    => '',
 		'entra_auto_provision'  => true,           // create WP user on first Entra login
+
+		// ── SMTP / Email ──────────────────────────────────────────────────────────
+		'smtp_enabled'    => false,
+		'smtp_host'       => '',
+		'smtp_port'       => 587,
+		'smtp_encryption' => 'tls',   // '' | 'ssl' | 'tls'
+		'smtp_auth'       => true,
+		'smtp_user'       => '',
+		'smtp_password'   => '',      // encrypted at rest (already in ENCRYPTED_FIELDS)
+		'smtp_from_name'  => '',
+		'smtp_from_email' => '',
 	);
 
 	// Runtime cache — cleared whenever settings are written.
@@ -147,7 +158,15 @@ class RRP_Portal_Settings {
 						$current[ $key ] = esc_url_raw( (string) $value );
 						break;
 					case 'contact_email':
+					case 'smtp_from_email':
 						$current[ $key ] = sanitize_email( (string) $value );
+						break;
+					case 'smtp_enabled':
+					case 'smtp_auth':
+						$current[ $key ] = (bool) $value;
+						break;
+					case 'smtp_port':
+						$current[ $key ] = absint( $value );
 						break;
 					default:
 						$current[ $key ] = sanitize_text_field( (string) $value );
