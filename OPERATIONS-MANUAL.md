@@ -1,7 +1,7 @@
 # Operations Manual — CityU Research Review Portal
 
 > **Version:** 1.0.0  
-> **Author:** Kiran Kumar Vejendla — [vejendlakirankumar@cityu.edu] and Jemell Garris - [] (mailto:vejendlakirankumar@cityu.edu)  
+> **Author:** Kiran Kumar Vejendla — [vejendlakirankumar@cityu.edu] and Jemell Garris - [Garris.jemell@cityu.edu] (mailto:vejendlakirankumar@cityu.edu)  
 > **Institution:** City University of Seattle · School of Technology and Computing (STC)  
 > **Last updated:** March 2026
 
@@ -760,14 +760,14 @@ Microsoft Entra ID **requires** an `https://` redirect URI for any non-localhost
 SSH into the VM and run the provided script:
 
 ```bash
-ssh azureadmin@rcgapimtest.eastus2.cloudapp.azure.com
+ssh itadmin@rrp.cityu.edu
 cd /mnt/c/Development/CityU-Research-Tracker
 sudo bash scripts/enable-https.sh
 ```
 
 The script will:
 - Install **Certbot** and the Apache plugin
-- Obtain a free **Let's Encrypt** certificate for `rcgapimtest.eastus2.cloudapp.azure.com`
+- Obtain a free **Let's Encrypt** certificate for `rrp.cityu.edu`
 - Configure Apache to serve HTTPS on port 443
 - Add an automatic **HTTP → HTTPS redirect** (301)
 - Update WordPress `siteurl` and `home` to `https://`
@@ -779,15 +779,15 @@ The script will:
 
 ```bash
 # HTTP should redirect to HTTPS
-curl -I http://rcgapimtest.eastus2.cloudapp.azure.com
+curl -I http://rrp.cityu.edu
 # Expected: HTTP/1.1 301 Moved Permanently  + Location: https://...
 
 # HTTPS should return 200
-curl -I https://rcgapimtest.eastus2.cloudapp.azure.com
+curl -I https://rrp.cityu.edu
 # Expected: HTTP/1.1 200 OK
 ```
 
-Open `https://rcgapimtest.eastus2.cloudapp.azure.com` in a browser — you should see a padlock (🔒) and no security warning.
+Open `https://rrp.cityu.edu` in a browser — you should see a padlock (🔒) and no security warning.
 
 ### Step 4 — Update the Redirect URI everywhere
 
@@ -795,7 +795,7 @@ After enabling HTTPS, update the redirect URI in **both** places:
 
 | Where | Old value | New value |
 |-------|-----------|----------|
-| Portal Settings → SSO → Redirect URI | `http://rcgapimtest.../auth/callback` | `https://rcgapimtest.eastus2.cloudapp.azure.com/wp-json/research-portal/v1/auth/callback` |
+| Portal Settings → SSO → Redirect URI | `http://rrp.../auth/callback` | `https://rrp.cityu.edu/wp-json/research-portal/v1/auth/callback` |
 | Azure App Registration → Authentication → Redirect URIs | same `http://` URI | same `https://` URI |
 
 ### Certificate renewal
@@ -826,7 +826,7 @@ The portal supports Microsoft Entra ID (Azure AD) as a Single Sign-On provider. 
 
 - An **Azure subscription** with permission to create or manage App Registrations in Entra ID.
 - **HTTPS must be enabled** on the portal server. Entra ID enforces `https://` redirect URIs for any non-localhost application. See [Enabling HTTPS (Let's Encrypt)](#enabling-https-lets-encrypt) above.
-- You have the portal's public HTTPS URL: `https://rcgapimtest.eastus2.cloudapp.azure.com`.
+- You have the portal's public HTTPS URL: `https://rrp.cityu.edu`.
 
 ---
 
@@ -844,7 +844,7 @@ The portal supports Microsoft Entra ID (Azure AD) as a Single Sign-On provider. 
 
 5. Set the **Redirect URI** to:
    ```
-   https://rcgapimtest.eastus2.cloudapp.azure.com/wp-json/research-portal/v1/auth/callback
+   https://rrp.cityu.edu/wp-json/research-portal/v1/auth/callback
    ```
    *(Replace the hostname with your actual domain if different. Must be `https://` — Entra does not accept plain `http://` for non-localhost URIs.)*
 
@@ -883,7 +883,7 @@ This is the **recommended method** — credentials are stored encrypted in the W
    | Tenant ID | paste your Directory (tenant) ID |
    | Client ID | paste your Application (client) ID |
    | Client Secret | paste the secret value you copied in Step 1.8 |
-   | Redirect URI | `https://rcgapimtest.eastus2.cloudapp.azure.com/wp-json/research-portal/v1/auth/callback` |
+   | Redirect URI | `https://rrp.cityu.edu/wp-json/research-portal/v1/auth/callback` |
    | Auto-provision new users | ✅ recommended (creates WP account on first login; no portal role until admin assigns one) |
 
    > **Note:** If the Redirect URI field shows `http://` (before HTTPS was enabled), update it to `https://` here and in the Azure App Registration.
@@ -899,7 +899,7 @@ This is the **recommended method** — credentials are stored encrypted in the W
 If you prefer to keep all secrets out of the database entirely, add these constants to `wp-config.php` on the VM **before** the `/* That's all, stop editing! */` line.
 
 ```bash
-ssh azureadmin@rcgapimtest.eastus2.cloudapp.azure.com
+ssh itadmin@rrp.cityu.edu
 sudo nano /var/www/html/wp-config.php
 ```
 
@@ -911,7 +911,7 @@ define( 'RRP_AUTH_PROVIDER',      'entra' );
 define( 'RRP_ENTRA_TENANT_ID',    'YOUR-TENANT-ID-HERE' );
 define( 'RRP_ENTRA_CLIENT_ID',    'YOUR-CLIENT-ID-HERE' );
 define( 'RRP_ENTRA_CLIENT_SECRET','YOUR-CLIENT-SECRET-HERE' );
-define( 'RRP_ENTRA_REDIRECT_URI', 'https://rcgapimtest.eastus2.cloudapp.azure.com/wp-json/research-portal/v1/auth/callback' );
+define( 'RRP_ENTRA_REDIRECT_URI', 'https://rrp.cityu.edu/wp-json/research-portal/v1/auth/callback' );
 ```
 
 > Constants take **priority over** the database settings. If both are set, `wp-config.php` wins.
@@ -924,7 +924,7 @@ define( 'RRP_ENTRA_REDIRECT_URI', 'https://rcgapimtest.eastus2.cloudapp.azure.co
 
 1. Open a **private/incognito browser window**.
 
-2. Navigate to `https://rcgapimtest.eastus2.cloudapp.azure.com` (the portal home page) **or** go directly to `https://rcgapimtest.eastus2.cloudapp.azure.com/wp-login.php`.
+2. Navigate to `https://rrp.cityu.edu` (the portal home page) **or** go directly to `https://rrp.cityu.edu/wp-login.php`.
 
 3. Both login paths now redirect automatically to `login.microsoftonline.com` when Entra SSO is enabled.
 
@@ -964,7 +964,7 @@ Entra client secrets expire. To rotate:
 The login page always shows **both** options: a **Sign in with Microsoft** button (visible only when Entra SSO is enabled) and the standard WordPress username/password form below it. There is no auto-redirect, so local login is always accessible at:
 
 ```
-https://rcgapimtest.eastus2.cloudapp.azure.com/wp-login.php
+https://rrp.cityu.edu/wp-login.php
 ```
 
 Simply scroll past the Microsoft button and use the username/password form. If you need to disable SSO entirely from the command line:
@@ -1062,7 +1062,7 @@ git pull origin main
 
 # 2. Copy changed files to the VM
 # (Using Send-FileSSH or scp — see DEPLOYMENT.md)
-scp -r . azureadmin@<VM-HOSTNAME>:/mnt/c/Development/CityU-Research-Tracker/
+scp -r . itadmin@<VM-HOSTNAME>:/mnt/c/Development/CityU-Research-Tracker/
 
 # 3. On the VM: no restart is needed unless PHP files changed
 # WordPress loads PHP on each request; JS/CSS have cache-busted query strings
