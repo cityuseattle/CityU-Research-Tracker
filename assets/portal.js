@@ -366,7 +366,6 @@
           '<div class="rrp-nav-card">' +
             '<div class="rrp-nav-card-title">Quick links</div>' +
             '<ul class="rrp-nav-list">' +
-              '<li><button type="button" class="rrp-nav-link" data-view="analytics">&#128202; Analytics</button></li>' +
               '<li><button type="button" class="rrp-nav-link" data-view="public">&#127760; Public submissions</button></li>' +
             '</ul>' +
           '</div>' +
@@ -383,8 +382,7 @@
     container.querySelectorAll('[data-view]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var view = btn.getAttribute('data-view');
-        if (view === 'analytics') renderAnalytics(container, function () { renderStudentDashboard(container); });
-        if (view === 'public')    renderPublic(container,    function () { renderStudentDashboard(container); });
+        if (view === 'public') renderPublic(container, function () { renderStudentDashboard(container); });
       });
     });
 
@@ -750,6 +748,12 @@
               '<li><button type="button" class="rrp-nav-link" data-view="public">&#127760; Public</button></li>' +
             '</ul>' +
           '</div>' +
+          '<div class="rrp-nav-card">' +
+            '<div class="rrp-nav-card-title">Settings</div>' +
+            '<ul class="rrp-nav-list">' +
+              '<li><button type="button" class="rrp-nav-link" data-view="portal-settings">&#9881; Portal Settings</button></li>' +
+            '</ul>' +
+          '</div>' +
           '<div id="rrp-coord-reviewer-pool"></div>' +
         '</aside>' +
       '</div>' +
@@ -772,6 +776,7 @@
         if (view === 'admins')             renderUsersPanel(container,            function () { renderCoordinatorDashboard(container); }, 'rrp_admin');
         if (view === 'workflow-stages')    renderWorkflowStagesPanel(container,   function () { renderCoordinatorDashboard(container); });
         if (view === 'submission-types')   renderSubmissionTypesPanel(container,  function () { renderCoordinatorDashboard(container); });
+        if (view === 'portal-settings')    renderPortalSettings(container,        function () { renderCoordinatorDashboard(container); });
       });
     });
 
@@ -1134,6 +1139,26 @@
         '<p class="rrp-info">Select a submission type below to view the process details.</p>' +
         '<p class="rrp-info">If you do not have an account, contact your administrator.</p>' +
         '<div style="margin-top:1rem;"><a class="rrp-btn" href="/">View process documentation</a></div>';
+      return;
+    }
+
+    // Logged in but no portal role assigned yet — show a holding page.
+    // Do NOT expose submission tiles or nav links until an admin grants a role.
+    var userRolesNow = (Array.isArray(window.RRP.userRoles) && window.RRP.userRoles.length)
+      ? window.RRP.userRoles
+      : (window.RRP.userRole ? [window.RRP.userRole] : []);
+    if (userRolesNow.length === 0) {
+      container.innerHTML =
+        '<div class="rrp-user-banner rrp-user-banner-loggedin">' +
+          '<span>Logged in as <strong>' + escapeHtml(window.RRP.userName || 'Unknown') + '</strong></span>' +
+          '<a href="' + escapeHtml(logoutUrl) + '" class="rrp-btn secondary">Logout</a>' +
+        '</div>' +
+        '<div class="rrp-card" style="max-width:520px;margin:3rem auto;text-align:center;padding:2.5rem;">' +
+          '<div style="font-size:3rem;margin-bottom:1rem;">&#128274;</div>' +
+          '<h2 style="margin-bottom:.75rem;">Account Pending Approval</h2>' +
+          '<p style="color:var(--rrp-text-muted);line-height:1.6;">Your account has been created but a portal role has not been assigned yet.</p>' +
+          '<p style="color:var(--rrp-text-muted);margin-top:.75rem;">Please contact your administrator to be granted access.</p>' +
+        '</div>';
       return;
     }
 
@@ -3793,34 +3818,32 @@
 
   // ── Student Management ────────────────────────────────────────────────────
   function renderStudentManagement(container, backFn) {
-    container.innerHTML =
-      '<div class="rrp-mgmt-page-header">' +
-        '<button type="button" class="rrp-btn secondary" id="rrp-mgmt-back">&#8592; Back</button>' +
-        '<h1>&#127891; Student Management</h1>' +
-        '<button type="button" class="rrp-btn" id="rrp-onboard-student-btn">&#43; Onboard New Student</button>' +
-      '</div>' +
-      '<div id="rrp-student-list"><p class="rrp-loading">Loading students&hellip;</p></div>';
+    var _studentSearch = '';
+    var _allStudents   = [];
 
-    document.getElementById('rrp-mgmt-back').addEventListener('click', function () {
-      if (backFn) backFn(); else renderCoordinatorDashboard(container);
-    });
-    document.getElementById('rrp-onboard-student-btn').addEventListener('click', function () {
-      renderStudentOnboardForm(container, null, function () { renderStudentManagement(container, backFn); });
-    });
+    function applyStudentFilter() {
+      var q = _studentSearch;
+      var filtered = _allStudents.filter(function (u) {
+        return !q ||
+          (u.name  || '').toLowerCase().indexOf(q) !== -1 ||
+          (u.email || '').toLowerCase().indexOf(q) !== -1;
+      });
+      var countEl = document.getElementById('rrp-student-count');
+      if (countEl) countEl.textContent = filtered.length + ' student' + (filtered.length === 1 ? '' : 's');
+      renderStudentRows(filtered);
+    }
 
-    api('GET', '/portal-users?role=student')
-      .then(function (res) {
-        var users = res.users || [];
-        var el = document.getElementById('rrp-student-list');
-        if (!el) return;
-        if (users.length === 0) {
-          el.innerHTML =
-            '<div class="rrp-empty-state" style="margin-top:2rem;">' +
-              '<p>No students enrolled yet. Click <strong>&#43; Onboard New Student</strong> to get started.</p>' +
-            '</div>';
-          return;
-        }
+    function renderStudentRows(users) {
+      var el = document.getElementById('rrp-student-list');
+      if (!el) return;
+      if (users.length === 0) {
         el.innerHTML =
+          '<div class="rrp-empty-state" style="margin-top:2rem;">' +
+            '<p>' + (_studentSearch ? 'No students match your search.' : 'No students enrolled yet. Click <strong>&#43; Onboard New Student</strong> to get started.') + '</p>' +
+          '</div>';
+        return;
+      }
+      el.innerHTML =
           '<div class="rrp-user-mgmt-table">' +
             '<div class="rrp-umr-head">' +
               '<span>Name</span><span>Email</span><span>Degree</span><span>Allowed Types</span><span>Actions</span>' +
@@ -3882,6 +3905,36 @@
               .catch(function () { alert('Failed to dismiss entry. Please try again.'); });
           });
         });
+    } // end renderStudentRows
+
+    // ── Page setup ────────────────────────────────────────────────────────────
+    container.innerHTML =
+      '<div class="rrp-mgmt-page-header">' +
+        '<button type="button" class="rrp-btn secondary" id="rrp-mgmt-back">&#8592; Back</button>' +
+        '<h1>&#127891; Student Management</h1>' +
+        '<button type="button" class="rrp-btn" id="rrp-onboard-student-btn">&#43; Onboard New Student</button>' +
+      '</div>' +
+      '<div style="display:flex;gap:.75rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap;">' +
+        '<input type="search" id="rrp-student-search" class="rrp-input" placeholder="&#128269; Search name or email\u2026" style="flex:1;min-width:180px;max-width:340px;">' +
+        '<span id="rrp-student-count" style="font-size:.85rem;color:var(--rrp-text-muted);white-space:nowrap;"></span>' +
+      '</div>' +
+      '<div id="rrp-student-list"><p class="rrp-loading">Loading students\u2026</p></div>';
+
+    document.getElementById('rrp-mgmt-back').addEventListener('click', function () {
+      if (backFn) backFn(); else renderCoordinatorDashboard(container);
+    });
+    document.getElementById('rrp-onboard-student-btn').addEventListener('click', function () {
+      renderStudentOnboardForm(container, null, function () { renderStudentManagement(container, backFn); });
+    });
+    document.getElementById('rrp-student-search').addEventListener('input', function () {
+      _studentSearch = this.value.toLowerCase().trim();
+      applyStudentFilter();
+    });
+
+    api('GET', '/portal-users?role=student')
+      .then(function (res) {
+        _allStudents = res.users || [];
+        applyStudentFilter();
       })
       .catch(function () {
         var el = document.getElementById('rrp-student-list');
@@ -4158,13 +4211,107 @@
 
   // ── Reviewer Management ───────────────────────────────────────────────────
   function renderReviewerManagement(container, backFn) {
+    var _reviewerSearch = '';
+    var _allReviewers   = [];
+
+    function applyReviewerFilter() {
+      var q = _reviewerSearch;
+      var filtered = _allReviewers.filter(function (u) {
+        return !q ||
+          (u.name       || '').toLowerCase().indexOf(q) !== -1 ||
+          (u.email      || '').toLowerCase().indexOf(q) !== -1 ||
+          (u.department || '').toLowerCase().indexOf(q) !== -1;
+      });
+      var countEl = document.getElementById('rrp-reviewer-count');
+      if (countEl) countEl.textContent = filtered.length + ' reviewer' + (filtered.length === 1 ? '' : 's');
+      renderReviewerRows(filtered);
+    }
+
+    function renderReviewerRows(users) {
+      var el = document.getElementById('rrp-reviewer-list');
+      if (!el) return;
+      if (users.length === 0) {
+        el.innerHTML =
+          '<div class="rrp-empty-state" style="margin-top:2rem;">' +
+            '<p>' + (_reviewerSearch ? 'No reviewers match your search.' : 'No reviewers enrolled yet. Click <strong>&#43; Add Reviewer</strong> to add one.') + '</p>' +
+          '</div>';
+        return;
+      }
+      el.innerHTML =
+        '<div class="rrp-user-mgmt-table">' +
+          '<div class="rrp-umr-head">' +
+            '<span>Name</span><span>Email</span><span>Department</span><span>Submission Types</span><span>Actions</span>' +
+          '</div>' +
+          users.map(function (u) {
+            var types = (u.submissionTypes || []).map(function (t) { return OB_TYPE_LABELS[t] || t; }).join(', ') || '—';
+            var nameCell = '<strong>' + escapeHtml(u.name || u.email) + '</strong>' +
+              (u.jsonOnly ? ' <span class="rrp-badge-legacy" title="Seeded from reviewer pool — no portal login yet">Legacy</span>' : '');
+            var deptCell = u.jsonOnly
+              ? '<em style="color:var(--rrp-text-muted);font-size:.85rem;">No portal account</em>'
+              : escapeHtml(u.department || '—');
+            var actionsCell = u.jsonOnly
+              ? '<button type="button" class="rrp-btn small" data-import-reviewer="' + u.id + '">&#8659; Import</button> ' +
+                '<button type="button" class="rrp-btn danger small" data-remove-json="' + u.id + '">Remove</button>'
+              : '<button type="button" class="rrp-btn secondary small" data-edit-reviewer="' + u.id + '">Edit</button> ' +
+                '<button type="button" class="rrp-btn danger small"     data-remove-reviewer="' + u.id + '">Remove</button>';
+            return '<div class="rrp-umr-row' + (u.jsonOnly ? ' rrp-umr-row-legacy' : '') + '">' +
+              '<span class="rrp-umr-name">' + nameCell + '</span>' +
+              '<span class="rrp-umr-email">' + escapeHtml(u.email) + '</span>' +
+              '<span>' + deptCell + '</span>' +
+              '<span class="rrp-umr-types" title="' + escapeHtml(types) + '">' + escapeHtml(types.length > 38 ? types.substring(0, 36) + '\u2026' : types) + '</span>' +
+              '<span class="rrp-umr-actions">' + actionsCell + '</span>' +
+            '</div>';
+          }).join('') +
+        '</div>';
+
+      el.querySelectorAll('[data-edit-reviewer]').forEach(function (btn) {
+        var uid  = btn.getAttribute('data-edit-reviewer');
+        var user = users.find(function (u) { return String(u.id) === uid; });
+        btn.addEventListener('click', function () {
+          renderReviewerOnboardForm(container, user, function () { renderReviewerManagement(container, backFn); });
+        });
+      });
+      el.querySelectorAll('[data-import-reviewer]').forEach(function (btn) {
+        var uid  = btn.getAttribute('data-import-reviewer');
+        var user = users.find(function (u) { return String(u.id) === uid; });
+        btn.addEventListener('click', function () {
+          renderReviewerOnboardForm(container, user, function () { renderReviewerManagement(container, backFn); });
+        });
+      });
+      el.querySelectorAll('[data-remove-reviewer]').forEach(function (btn) {
+        var uid  = btn.getAttribute('data-remove-reviewer');
+        var user = users.find(function (u) { return String(u.id) === uid; });
+        btn.addEventListener('click', function () {
+          if (!confirm('Remove portal access for ' + escapeHtml(user ? (user.name || user.email) : 'this user') + '?\nThey will lose the Reviewer role but remain as a WordPress user.')) return;
+          api('DELETE', '/portal-users/' + uid)
+            .then(function ()  { renderReviewerManagement(container, backFn); })
+            .catch(function () { alert('Failed to remove access. Please try again.'); });
+        });
+      });
+      el.querySelectorAll('[data-remove-json]').forEach(function (btn) {
+        var jsonId = btn.getAttribute('data-remove-json');
+        var user   = users.find(function (u) { return String(u.id) === jsonId; });
+        btn.addEventListener('click', function () {
+          if (!confirm('Remove ' + escapeHtml(user ? (user.name || user.email) : 'this reviewer') + ' from the reviewer pool?\nThis cannot be undone.')) return;
+          api('DELETE', '/portal-users/json/' + jsonId)
+            .then(function ()  { renderReviewerManagement(container, backFn); })
+            .catch(function () { alert('Failed to remove reviewer. Please try again.'); });
+        });
+      });
+    } // end renderReviewerRows
+
+    // ── Page setup ────────────────────────────────────────────────────────────
     container.innerHTML =
       '<div class="rrp-mgmt-page-header">' +
         '<button type="button" class="rrp-btn secondary" id="rrp-mgmt-back">&#8592; Back</button>' +
         '<h1>&#128101; Reviewer Management</h1>' +
         '<button type="button" class="rrp-btn" id="rrp-onboard-reviewer-btn">&#43; Add Reviewer</button>' +
       '</div>' +
-      '<div id="rrp-reviewer-list"><p class="rrp-loading">Loading reviewers&hellip;</p></div>';
+      '<div style="display:flex;gap:.75rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap;">' +
+        '<input type="search" id="rrp-reviewer-search" class="rrp-input" placeholder="&#128269; Search name, email or department\u2026" style="flex:1;min-width:180px;max-width:380px;">' +
+        '<span id="rrp-reviewer-count" style="font-size:.85rem;color:var(--rrp-text-muted);white-space:nowrap;"></span>' +
+      '</div>' +
+      '<div id="rrp-reviewer-list"><p class="rrp-loading">Loading reviewers\u2026</p></div>';
 
     document.getElementById('rrp-mgmt-back').addEventListener('click', function () {
       if (backFn) backFn(); else renderCoordinatorDashboard(container);
@@ -4172,80 +4319,15 @@
     document.getElementById('rrp-onboard-reviewer-btn').addEventListener('click', function () {
       renderReviewerOnboardForm(container, null, function () { renderReviewerManagement(container, backFn); });
     });
+    document.getElementById('rrp-reviewer-search').addEventListener('input', function () {
+      _reviewerSearch = this.value.toLowerCase().trim();
+      applyReviewerFilter();
+    });
 
     api('GET', '/portal-users?role=reviewer')
       .then(function (res) {
-        var users = res.users || [];
-        var el = document.getElementById('rrp-reviewer-list');
-        if (!el) return;
-        if (users.length === 0) {
-          el.innerHTML =
-            '<div class="rrp-empty-state" style="margin-top:2rem;">' +
-              '<p>No reviewers enrolled yet. Click <strong>&#43; Add Reviewer</strong> to add one.</p>' +
-            '</div>';
-          return;
-        }
-        el.innerHTML =
-          '<div class="rrp-user-mgmt-table">' +
-            '<div class="rrp-umr-head">' +
-              '<span>Name</span><span>Email</span><span>Department</span><span>Submission Types</span><span>Actions</span>' +
-            '</div>' +
-            users.map(function (u) {
-              var types = (u.submissionTypes || []).map(function (t) { return OB_TYPE_LABELS[t] || t; }).join(', ') || '—';
-              var nameCell = '<strong>' + escapeHtml(u.name || u.email) + '</strong>' +
-                (u.jsonOnly ? ' <span class="rrp-badge-legacy" title="Seeded from reviewer pool — no portal login yet">Legacy</span>' : '');
-              var deptCell = u.jsonOnly
-                ? '<em style="color:var(--rrp-text-muted);font-size:.85rem;">No portal account</em>'
-                : escapeHtml(u.department || '—');
-              var actionsCell = u.jsonOnly
-                ? '<button type="button" class="rrp-btn small" data-import-reviewer="' + u.id + '">&#8659; Import</button> ' +
-                  '<button type="button" class="rrp-btn danger small" data-remove-json="' + u.id + '">Remove</button>'
-                : '<button type="button" class="rrp-btn secondary small" data-edit-reviewer="' + u.id + '">Edit</button> ' +
-                  '<button type="button" class="rrp-btn danger small"     data-remove-reviewer="' + u.id + '">Remove</button>';
-              return '<div class="rrp-umr-row' + (u.jsonOnly ? ' rrp-umr-row-legacy' : '') + '">' +
-                '<span class="rrp-umr-name">' + nameCell + '</span>' +
-                '<span class="rrp-umr-email">' + escapeHtml(u.email) + '</span>' +
-                '<span>' + deptCell + '</span>' +
-                '<span class="rrp-umr-types" title="' + escapeHtml(types) + '">' + escapeHtml(types.length > 38 ? types.substring(0, 36) + '…' : types) + '</span>' +
-                '<span class="rrp-umr-actions">' + actionsCell + '</span>' +
-              '</div>';
-            }).join('') +
-          '</div>';
-
-        el.querySelectorAll('[data-edit-reviewer]').forEach(function (btn) {
-          var uid  = btn.getAttribute('data-edit-reviewer');
-          var user = users.find(function (u) { return String(u.id) === uid; });
-          btn.addEventListener('click', function () {
-            renderReviewerOnboardForm(container, user, function () { renderReviewerManagement(container, backFn); });
-          });
-        });
-        el.querySelectorAll('[data-import-reviewer]').forEach(function (btn) {
-          var uid  = btn.getAttribute('data-import-reviewer');
-          var user = users.find(function (u) { return String(u.id) === uid; });
-          btn.addEventListener('click', function () {
-            renderReviewerOnboardForm(container, user, function () { renderReviewerManagement(container, backFn); });
-          });
-        });
-        el.querySelectorAll('[data-remove-reviewer]').forEach(function (btn) {
-          var uid  = btn.getAttribute('data-remove-reviewer');
-          var user = users.find(function (u) { return String(u.id) === uid; });
-          btn.addEventListener('click', function () {
-            if (!confirm('Remove portal access for ' + escapeHtml(user ? (user.name || user.email) : 'this user') + '?\nThey will lose the Reviewer role but remain as a WordPress user.')) return;
-            api('DELETE', '/portal-users/' + uid)
-              .then(function ()  { renderReviewerManagement(container, backFn); })
-              .catch(function () { alert('Failed to remove access. Please try again.'); });
-          });
-        });
-        el.querySelectorAll('[data-remove-json]').forEach(function (btn) {
-          var jsonId = btn.getAttribute('data-remove-json');
-          var user   = users.find(function (u) { return String(u.id) === jsonId; });
-          btn.addEventListener('click', function () {
-            if (!confirm('Remove ' + escapeHtml(user ? (user.name || user.email) : 'this reviewer') + ' from the reviewer pool?\nThis cannot be undone.')) return;
-            api('DELETE', '/portal-users/json/' + jsonId)
-              .then(function ()  { renderReviewerManagement(container, backFn); })
-              .catch(function () { alert('Failed to remove reviewer. Please try again.'); });
-          });
-        });
+        _allReviewers = res.users || [];
+        applyReviewerFilter();
       })
       .catch(function () {
         var el = document.getElementById('rrp-reviewer-list');
@@ -4887,6 +4969,144 @@
     }).catch(function () {
       var body = document.getElementById('rrp-programs-body');
       if (body) body.innerHTML = '<div class="rrp-error">Failed to load programs. Please try again.</div>';
+    });
+  }
+
+  // ── Portal Settings (university branding + SSO) ───────────────────────────
+  function renderPortalSettings(container, backFn) {
+    var _saving = false;
+
+    function showMsg(msg, isError) {
+      var el = document.getElementById('rrp-settings-msg');
+      if (!el) return;
+      el.innerHTML = '<span class="' + (isError ? 'rrp-error' : 'rrp-success') + '">' + escapeHtml(msg) + '</span>';
+    }
+
+    container.innerHTML =
+      '<div class="rrp-mgmt-page-header">' +
+        '<button type="button" class="rrp-btn secondary" id="rrp-settings-back">&#8592; Back</button>' +
+        '<h1>&#9881; Portal Settings</h1>' +
+      '</div>' +
+      '<div id="rrp-settings-body"><p class="rrp-loading">Loading settings\u2026</p></div>';
+
+    document.getElementById('rrp-settings-back').addEventListener('click', function () {
+      if (backFn) backFn(); else renderCoordinatorDashboard(container);
+    });
+
+    api('GET', '/settings').then(function (s) {
+      document.getElementById('rrp-settings-body').innerHTML =
+        '<form id="rrp-settings-form" style="max-width:640px;" autocomplete="off">' +
+
+        '<fieldset class="rrp-fieldset">' +
+          '<legend>University Branding</legend>' +
+          '<label class="rrp-label">University Name' +
+            '<input type="text" class="rrp-input" name="university_name" value="' + escapeHtml(s.university_name || '') + '" required maxlength="120">' +
+          '</label>' +
+          '<label class="rrp-label">Short Name / Abbreviation' +
+            '<input type="text" class="rrp-input" name="university_short_name" value="' + escapeHtml(s.university_short_name || '') + '" maxlength="30">' +
+          '</label>' +
+          '<label class="rrp-label">Logo URL <span style="font-weight:400;font-size:.85em;">(leave blank to use default)</span>' +
+            '<input type="url" class="rrp-input" name="university_logo_url" value="' + escapeHtml(s.university_logo_url || '') + '" placeholder="https://\u2026" maxlength="512">' +
+          '</label>' +
+          '<label class="rrp-label">Portal Name' +
+            '<input type="text" class="rrp-input" name="portal_name" value="' + escapeHtml(s.portal_name || '') + '" required maxlength="120">' +
+          '</label>' +
+          '<label class="rrp-label">Contact Email' +
+            '<input type="email" class="rrp-input" name="contact_email" value="' + escapeHtml(s.contact_email || '') + '" maxlength="254">' +
+          '</label>' +
+        '</fieldset>' +
+
+        '<fieldset class="rrp-fieldset" style="margin-top:1.25rem;">' +
+          '<legend>Single Sign-On (SSO)</legend>' +
+          '<label class="rrp-label" style="flex-direction:row;align-items:center;gap:.6rem;">' +
+            '<input type="checkbox" name="sso_enabled" id="rrp-sso-toggle"' + (s.sso_enabled ? ' checked' : '') + '>' +
+            '<span>Enable SSO</span>' +
+          '</label>' +
+          '<div id="rrp-sso-fields" style="' + (s.sso_enabled ? '' : 'display:none;') + 'margin-top:1rem;">' +
+            '<label class="rrp-label">SSO Provider' +
+              '<select class="rrp-input" name="sso_provider" id="rrp-sso-provider">' +
+                '<option value="entra"' + (s.sso_provider === 'entra' ? ' selected' : '') + '>Microsoft Entra ID (Azure AD)</option>' +
+              '</select>' +
+            '</label>' +
+            '<div id="rrp-entra-fields" style="' + (s.sso_provider !== 'entra' ? 'display:none;' : '') + '">' +
+              '<label class="rrp-label">Tenant ID' +
+                '<input type="text" class="rrp-input" name="entra_tenant_id" value="' + escapeHtml(s.entra_tenant_id || '') + '" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" maxlength="40">' +
+              '</label>' +
+              '<label class="rrp-label">Client ID (Application ID)' +
+                '<input type="text" class="rrp-input" name="entra_client_id" value="' + escapeHtml(s.entra_client_id || '') + '" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" maxlength="40">' +
+              '</label>' +
+              '<label class="rrp-label">Client Secret' +
+                '<input type="password" class="rrp-input" name="entra_client_secret" value="" autocomplete="new-password" placeholder="' + (s.entra_client_secret === '[encrypted]' ? 'Leave blank to keep current secret' : 'Enter client secret') + '">' +
+                '<small style="color:var(--rrp-text-muted);">Stored encrypted at rest using AES-256-GCM.</small>' +
+              '</label>' +
+              '<label class="rrp-label">Redirect URI' +
+                '<input type="url" class="rrp-input" name="entra_redirect_uri" value="' + escapeHtml(s.entra_redirect_uri || '') + '" placeholder="https://your-domain/wp-json/research-portal/v1/auth/callback" maxlength="512">' +
+              '</label>' +
+              '<label class="rrp-label" style="flex-direction:row;align-items:center;gap:.6rem;">' +
+                '<input type="checkbox" name="entra_auto_provision"' + (s.entra_auto_provision !== false ? ' checked' : '') + '>' +
+                '<span>Auto-provision new users on first login <small style="color:var(--rrp-text-muted);">(no portal role — admin must assign)</small></span>' +
+              '</label>' +
+            '</div>' +
+          '</div>' +
+        '</fieldset>' +
+
+        '<div style="display:flex;gap:.75rem;align-items:center;margin-top:1.5rem;">' +
+          '<button type="submit" class="rrp-btn" id="rrp-settings-save">&#128190; Save Settings</button>' +
+          '<span id="rrp-settings-msg"></span>' +
+        '</div>' +
+        '</form>';
+
+      // SSO enabled toggle
+      document.getElementById('rrp-sso-toggle').addEventListener('change', function () {
+        document.getElementById('rrp-sso-fields').style.display = this.checked ? '' : 'none';
+      });
+      // Provider selector
+      document.getElementById('rrp-sso-provider').addEventListener('change', function () {
+        document.getElementById('rrp-entra-fields').style.display = this.value === 'entra' ? '' : 'none';
+      });
+
+      // Form submit
+      document.getElementById('rrp-settings-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        if (_saving) return;
+        _saving = true;
+        var btn = document.getElementById('rrp-settings-save');
+        btn.disabled = true; btn.textContent = 'Saving\u2026';
+
+        var fd = new FormData(this);
+        var payload = {
+          university_name:       (fd.get('university_name')       || '').trim(),
+          university_short_name: (fd.get('university_short_name') || '').trim(),
+          university_logo_url:   (fd.get('university_logo_url')   || '').trim(),
+          portal_name:           (fd.get('portal_name')           || '').trim(),
+          contact_email:         (fd.get('contact_email')         || '').trim(),
+          sso_enabled:           document.getElementById('rrp-sso-toggle').checked,
+          sso_provider:          fd.get('sso_provider') || 'entra',
+          entra_tenant_id:       (fd.get('entra_tenant_id')       || '').trim(),
+          entra_client_id:       (fd.get('entra_client_id')       || '').trim(),
+          entra_redirect_uri:    (fd.get('entra_redirect_uri')    || '').trim(),
+          entra_auto_provision:  !!fd.get('entra_auto_provision'),
+        };
+        // Only send secret if user actually typed something
+        var secret = (fd.get('entra_client_secret') || '').trim();
+        if (secret) payload.entra_client_secret = secret;
+
+        api('PUT', '/settings', payload)
+          .then(function () {
+            showMsg('Settings saved.', false);
+            btn.disabled = false; btn.textContent = '&#128190; Save Settings';
+            _saving = false;
+          })
+          .catch(function (err) {
+            showMsg((err && err.data && err.data.error) || 'Save failed. Please try again.', true);
+            btn.disabled = false; btn.textContent = '&#128190; Save Settings';
+            _saving = false;
+          });
+      });
+
+    }).catch(function () {
+      document.getElementById('rrp-settings-body').innerHTML =
+        '<div class="rrp-error">Unable to load settings.</div>';
     });
   }
 

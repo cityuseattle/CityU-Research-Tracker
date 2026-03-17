@@ -250,16 +250,16 @@ class Portal_REST {
 			'permission_callback' => array( __CLASS__, 'can_view_dashboard' ),
 		) );
 		// Portal user management (students & reviewers)
-		// Self-profile: any logged-in user can read & update their own record
+		// Self-profile: only authenticated users can read & update their own record
 		register_rest_route( self::NAMESPACE, '/portal-users/me', array(
 			'methods'             => 'GET',
 			'callback'            => array( __CLASS__, 'portal_users_me' ),
-			'permission_callback' => '__return_true',
+			'permission_callback' => 'is_user_logged_in',
 		) );
 		register_rest_route( self::NAMESPACE, '/portal-users/me', array(
 			'methods'             => 'PATCH',
 			'callback'            => array( __CLASS__, 'portal_users_me_update' ),
-			'permission_callback' => '__return_true',
+			'permission_callback' => 'is_user_logged_in',
 		) );
 		register_rest_route( self::NAMESPACE, '/portal-users', array(
 			'methods'             => 'GET',
@@ -303,6 +303,23 @@ class Portal_REST {
 			'callback'            => array( __CLASS__, 'portal_users_reset_password' ),
 			'permission_callback' => array( __CLASS__, 'can_manage_config' ),
 			'args'                => array( 'id' => array( 'required' => true ) ),
+		) );
+		// Portal settings (university branding + SSO)
+		register_rest_route( self::NAMESPACE, '/settings', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'portal_settings_get' ),
+			'permission_callback' => array( __CLASS__, 'can_manage_config' ),
+		) );
+		register_rest_route( self::NAMESPACE, '/settings', array(
+			'methods'             => 'PUT',
+			'callback'            => array( __CLASS__, 'portal_settings_update' ),
+			'permission_callback' => array( __CLASS__, 'can_manage_config' ),
+		) );
+		// OAuth2 redirect callback for Microsoft Entra SSO (public — no auth required)
+		register_rest_route( self::NAMESPACE, '/auth/callback', array(
+			'methods'             => 'GET',
+			'callback'            => array( 'RRP_Auth_Provider', 'handle_entra_callback' ),
+			'permission_callback' => '__return_true',
 		) );
 	}
 
@@ -2186,13 +2203,36 @@ class Portal_REST {
 		} elseif ( $role_filter === 'faculty' ) {
 			$roles_to_query = array( 'rrp_faculty' );
 		} else {
-			$roles_to_query = array( 'rrp_student', 'rrp_reviewer' );
+			$roles_to_query = array( 'rrp_student', 'rrp_reviewer', 'rrp_coordinator', 'rrp_admin', 'rrp_faculty' );
 		}
-		$users = array();
+		$seen_ids = array();
+		$users    = array();
 		foreach ( $roles_to_query as $role ) {
 			$wp_users = get_users( array( 'role' => $role, 'number' => -1, 'orderby' => 'display_name' ) );
 			foreach ( $wp_users as $u ) {
-				$users[] = self::format_portal_user( $u );
+				if ( ! isset( $seen_ids[ $u->ID ] ) ) {
+					$seen_ids[ $u->ID ] = true;
+					$users[] = self::format_portal_user( $u );
+				}
+			}
+		}
+		// Also include users with no portal role so admins can find and assign them.
+		if ( $role_filter === '' ) {
+			$no_role_users = get_users( array(
+				'role__not_in' => array_merge(
+					$roles_to_query,
+					array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' )
+				),
+				'number'  => -1,
+				'orderby' => 'display_name',
+			) );
+			foreach ( $no_role_users as $u ) {
+				if ( ! isset( $seen_ids[ $u->ID ] ) ) {
+					$seen_ids[ $u->ID ] = true;
+					$formatted          = self::format_portal_user( $u );
+					$formatted['portalRole'] = 'Pending';
+					$users[] = $formatted;
+				}
 			}
 		}
 		// Merge legacy students: submitters from submissions.json who don't yet have a WP account.
@@ -2555,5 +2595,23 @@ class Portal_REST {
 		}
 		$log = isset( $sub['auditLog'] ) && is_array( $sub['auditLog'] ) ? $sub['auditLog'] : array();
 		return new WP_REST_Response( array( 'id' => $id, 'auditLog' => array_reverse( $log ) ), 200 );
+	}
+
+	// ─── Portal Settings ──────────────────────────────────────────────────────
+
+	public static function portal_settings_get( WP_REST_Request $request ): WP_REST_Response {
+		return new WP_REST_Response( RRP_Portal_Settings::get_all( true ), 200 );
+	}
+
+	public static function portal_settings_update( WP_REST_Request $request ): WP_REST_Response {
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) || empty( $body ) ) {
+			return new WP_REST_Response( array( 'error' => 'Request body must be a JSON object.' ), 400 );
+		}
+		$updated = RRP_Portal_Settings::update( $body );
+		if ( is_wp_error( $updated ) ) {
+			return new WP_REST_Response( array( 'error' => $updated->get_error_message() ), 422 );
+		}
+		return new WP_REST_Response( RRP_Portal_Settings::get_all( true ), 200 );
 	}
 }

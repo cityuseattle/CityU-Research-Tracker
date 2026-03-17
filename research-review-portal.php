@@ -20,6 +20,7 @@ define( 'RRP_UPLOADS_DIR', RRP_DATA_DIR . 'uploads/' );
 
 require_once RRP_PLUGIN_DIR . 'includes/class-portal-data.php';
 require_once RRP_PLUGIN_DIR . 'includes/class-portal-rest.php';
+require_once RRP_PLUGIN_DIR . 'includes/class-portal-settings.php';
 require_once RRP_PLUGIN_DIR . 'includes/class-user-management.php';
 require_once RRP_PLUGIN_DIR . 'includes/class-process-documentation.php';
 require_once RRP_PLUGIN_DIR . 'includes/class-auth-provider.php';
@@ -35,6 +36,64 @@ class Research_Review_Portal {
 		add_action( 'login_enqueue_scripts', array( __CLASS__, 'login_styles' ) );
 		add_filter( 'login_headerurl',       array( __CLASS__, 'login_header_url' ) );
 		add_filter( 'login_headertext',      array( __CLASS__, 'login_header_text' ) );
+		// Show login choice: Entra SSO button + local form.
+		add_filter( 'login_message',         array( __CLASS__, 'login_choice_message' ) );
+		// Clear the Entra session flag when a user logs in via the standard WP form.
+		add_action( 'wp_login', array( __CLASS__, 'clear_entra_session_flag' ), 10, 2 );
+		// Clear the Entra session flag on any logout (before session is destroyed).
+		add_action( 'wp_logout', array( __CLASS__, 'clear_entra_session_flag_on_logout' ) );
+	}
+
+	/**
+	 * Inject a "Sign in with Microsoft" button above the standard WP login form
+	 * whenever Entra SSO is configured and enabled.
+	 *
+	 * The local username/password form is always shown below — no auto-redirect.
+	 * This gives users and administrators a clear choice and avoids lock-outs.
+	 */
+	public static function login_choice_message( $message ) {
+		$action = sanitize_key( $_GET['action'] ?? 'login' );
+		if ( $action !== 'login' ) {
+			return $message;
+		}
+		if ( ! class_exists( 'RRP_Auth_Provider' ) || ! RRP_Auth_Provider::is_entra_active() ) {
+			return $message;
+		}
+		$redirect_to = esc_url_raw( $_GET['redirect_to'] ?? home_url( '/' ) );
+		$entra_url   = RRP_Auth_Provider::get_login_url( $redirect_to );
+		$btn = '<div id="rrp-sso-choice">'
+			. '<a href="' . esc_url( $entra_url ) . '" class="button button-hero rrp-entra-btn">'
+			. '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 21 21" style="vertical-align:middle;margin-right:8px">'
+			. '<path d="M10 0H0v10h10V0z" fill="#F25022"/>'
+			. '<path d="M21 0H11v10h10V0z" fill="#7FBA00"/>'
+			. '<path d="M10 11H0v10h10V11z" fill="#00A4EF"/>'
+			. '<path d="M21 11H11v10h10V11z" fill="#FFB900"/>'
+			. '</svg>'
+			. 'Sign in with Microsoft'
+			. '</a>'
+			. '<div class="rrp-divider"><span>or sign in with username &amp; password</span></div>'
+			. '</div>';
+		return $message . $btn;
+	}
+
+	/**
+	 * Clear the Entra session flag when a user logs in via the standard WP password form.
+	 * Hooked to wp_login (fires after successful credential authentication).
+	 */
+	public static function clear_entra_session_flag( $user_login, $user ) {
+		delete_user_meta( $user->ID, 'rrp_session_via_entra' );
+	}
+
+	/**
+	 * Clear the Entra session flag when a user logs out (any provider).
+	 * Hooked to wp_logout which fires before the session is destroyed,
+	 * so get_current_user_id() is still valid.
+	 */
+	public static function clear_entra_session_flag_on_logout() {
+		$user_id = get_current_user_id();
+		if ( $user_id ) {
+			delete_user_meta( $user_id, 'rrp_session_via_entra' );
+		}
 	}
 
 	public static function login_styles() {
@@ -54,6 +113,39 @@ body.login #login { padding-top: 40px; }
 body.login #wp-auth-check-wrap #wp-auth-check { border-top: 4px solid #002f52; }
 body.login .button-primary { background: #002f52 !important; border-color: #002f52 !important; }
 body.login .button-primary:hover, body.login .button-primary:focus { background: #005a99 !important; border-color: #005a99 !important; }
+/* SSO choice UI */
+#rrp-sso-choice { margin-bottom: 16px; text-align: center; }
+.rrp-entra-btn {
+	display: inline-flex !important;
+	align-items: center;
+	justify-content: center;
+	width: 100% !important;
+	padding: 10px 16px !important;
+	background: #fff !important;
+	border: 1px solid #ccc !important;
+	border-radius: 4px !important;
+	color: #333 !important;
+	font-size: 15px !important;
+	font-weight: 500 !important;
+	text-decoration: none !important;
+	box-shadow: 0 1px 3px rgba(0,0,0,.12);
+	transition: box-shadow .15s;
+}
+.rrp-entra-btn:hover { box-shadow: 0 2px 6px rgba(0,0,0,.2) !important; border-color: #0078d4 !important; }
+.rrp-divider {
+	display: flex;
+	align-items: center;
+	margin: 20px 0 8px;
+	color: #888;
+	font-size: 13px;
+}
+.rrp-divider::before, .rrp-divider::after {
+	content: "";
+	flex: 1;
+	height: 1px;
+	background: #ddd;
+}
+.rrp-divider span { padding: 0 10px; white-space: nowrap; }
 </style>' . "\n";
 	}
 
@@ -208,7 +300,7 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 		$role_label  = implode( ' · ', $role_labels );
 
 		wp_add_inline_script( 'research-review-portal', sprintf(
-			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: %s, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s, userRoles: %s, userEmail: %s, userId: %s, firstName: %s, lastName: %s, degree: %s, department: %s, expertise: %s };',
+			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: %s, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s, userRoles: %s, userEmail: %s, userId: %s, firstName: %s, lastName: %s, degree: %s, department: %s, expertise: %s, universityName: %s, universityShortName: %s, universityLogo: %s, portalName: %s, ssoEnabled: %s, ssoProvider: %s };',
 			wp_json_encode( rest_url( 'research-portal/v1' ) ),
 			wp_json_encode( wp_create_nonce( 'wp_rest' ) ),
 			wp_json_encode( $logged_in ),
@@ -223,7 +315,13 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 			wp_json_encode( $current_user->exists() ? $current_user->last_name : '' ),
 			wp_json_encode( $current_user->exists() ? (string) ( get_user_meta( $current_user->ID, 'rrp_degree', true ) ?: '' ) : '' ),
 			wp_json_encode( $current_user->exists() ? (string) ( get_user_meta( $current_user->ID, 'rrp_department', true ) ?: '' ) : '' ),
-			wp_json_encode( $current_user->exists() ? (string) ( get_user_meta( $current_user->ID, 'rrp_expertise', true ) ?: '' ) : '' )
+			wp_json_encode( $current_user->exists() ? (string) ( get_user_meta( $current_user->ID, 'rrp_expertise', true ) ?: '' ) : '' ),
+			wp_json_encode( RRP_Portal_Settings::get( 'university_name' ) ),
+			wp_json_encode( RRP_Portal_Settings::get( 'university_short_name' ) ),
+			wp_json_encode( RRP_Portal_Settings::get( 'university_logo_url' ) ?: RRP_PLUGIN_URL . 'assets/city-university-logo.svg' ),
+			wp_json_encode( RRP_Portal_Settings::get( 'portal_name' ) ),
+			wp_json_encode( RRP_Portal_Settings::get( 'sso_enabled' ) ),
+			wp_json_encode( RRP_Portal_Settings::get( 'sso_provider' ) )
 		), 'before' );
 
 		ob_start();
@@ -536,19 +634,26 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 		$user_roles   = $current_user->exists() ? $current_user->roles : array();
 		$role_labels  = RRP_User_Management::get_role_labels( $user_roles );
 		$role_label   = $role_labels[0] ?? '';
-		$logout_url  = esc_url( wp_logout_url( home_url( '/' ) ) );
-		$logo_url    = esc_url( RRP_PLUGIN_URL . 'assets/city-university-logo.svg' );
+		$logout_url   = esc_url( RRP_Auth_Provider::get_logout_url( home_url( '/' ) ) );
+
+		// Load configurable branding
+		$univ_name   = RRP_Portal_Settings::get( 'university_name' );
+		$univ_short  = RRP_Portal_Settings::get( 'university_short_name' );
+		$portal_name = RRP_Portal_Settings::get( 'portal_name' );
+		$logo_raw    = RRP_Portal_Settings::get( 'university_logo_url' );
+		$logo_url    = esc_url( $logo_raw ?: RRP_PLUGIN_URL . 'assets/city-university-logo.svg' );
+
 		wp_enqueue_style( 'research-review-portal', RRP_PLUGIN_URL . 'assets/portal.css', array(), (string) filemtime( RRP_PLUGIN_DIR . 'assets/portal.css' ) );
 		wp_enqueue_script( 'mammoth-js', 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.7.0/mammoth.browser.min.js', array(), '1.7.0', true );
 		wp_enqueue_script( 'research-review-portal', RRP_PLUGIN_URL . 'assets/portal.js', array( 'mammoth-js' ), (string) filemtime( RRP_PLUGIN_DIR . 'assets/portal.js' ), true );
 		$rrp_allowed_types = (array) ( get_user_meta( get_current_user_id(), 'rrp_allowed_submission_types', true ) ?: [] );
 		$rrp_program_ids   = (array) ( get_user_meta( get_current_user_id(), 'rrp_program_ids', true ) ?: [] );
 		wp_add_inline_script( 'research-review-portal', sprintf(
-			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: true, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s, userEmail: %s, allowedTypes: %s, userId: %s, programIds: %s, userRoles: %s, firstName: %s, lastName: %s, degree: %s, department: %s, expertise: %s };',
+			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: true, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s, userEmail: %s, allowedTypes: %s, userId: %s, programIds: %s, userRoles: %s, firstName: %s, lastName: %s, degree: %s, department: %s, expertise: %s, universityName: %s, universityShortName: %s, universityLogo: %s, portalName: %s, ssoEnabled: %s, ssoProvider: %s };',
 			wp_json_encode( rest_url( 'research-portal/v1' ) ),
 			wp_json_encode( wp_create_nonce( 'wp_rest' ) ),
 			wp_json_encode( '' ),
-			wp_json_encode( wp_logout_url( home_url( '/' ) ) ),
+			wp_json_encode( RRP_Auth_Provider::get_logout_url( home_url( '/' ) ) ),
 			wp_json_encode( $user_name ),
 			wp_json_encode( $role_label ),
 			wp_json_encode( $current_user->user_email ),
@@ -560,7 +665,13 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 			wp_json_encode( $current_user->last_name ),
 			wp_json_encode( (string) ( get_user_meta( get_current_user_id(), 'rrp_degree', true ) ?: '' ) ),
 			wp_json_encode( (string) ( get_user_meta( get_current_user_id(), 'rrp_department', true ) ?: '' ) ),
-			wp_json_encode( (string) ( get_user_meta( get_current_user_id(), 'rrp_expertise', true ) ?: '' ) )
+			wp_json_encode( (string) ( get_user_meta( get_current_user_id(), 'rrp_expertise', true ) ?: '' ) ),
+			wp_json_encode( $univ_name ),
+			wp_json_encode( $univ_short ),
+			wp_json_encode( $logo_raw ?: RRP_PLUGIN_URL . 'assets/city-university-logo.svg' ),
+			wp_json_encode( $portal_name ),
+			wp_json_encode( RRP_Portal_Settings::get( 'sso_enabled' ) ),
+			wp_json_encode( RRP_Portal_Settings::get( 'sso_provider' ) )
 		), 'before' );
 		?>
 <!DOCTYPE html><html <?php language_attributes(); ?>>
@@ -587,8 +698,8 @@ body{margin:0;padding:0;background:#f4f6f9}
 <body>
 <div class="rrp-ptopbar">
   <div class="rrp-ptopbar-left">
-    <img src="<?php echo $logo_url; ?>" alt="City University of Seattle" class="rrp-ptopbar-logo">
-    <span class="rrp-ptopbar-brand">Research Review Portal</span>
+    <img src="<?php echo $logo_url; ?>" alt="<?php echo esc_attr( $univ_name ); ?>" class="rrp-ptopbar-logo">
+    <span class="rrp-ptopbar-brand"><?php echo esc_html( $portal_name ); ?></span>
   </div>
   <div class="rrp-ptopbar-right">
     <span>Logged in as <strong><?php echo esc_html( $user_name ); ?></strong></span>
@@ -601,7 +712,7 @@ body{margin:0;padding:0;background:#f4f6f9}
   </div>
 </div>
 <footer style="text-align:center;padding:.9rem 1rem;font-size:.78rem;color:#9ca3af;border-top:1px solid #e5e7eb;margin-top:2rem;background:#f8fafc">
-  &copy; <?php echo esc_html( gmdate( 'Y' ) ); ?> City University of Seattle &middot; Research Review Portal &middot; School of Technology and Computing (STC)<br>
+  &copy; <?php echo esc_html( gmdate( 'Y' ) ); ?> <?php echo esc_html( $univ_name ); ?> &middot; <?php echo esc_html( $portal_name ); ?> &middot; School of Technology and Computing (STC)<br>
   <span style="font-size:.73rem;">Designed &amp; developed by <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#4b83bc;text-decoration:none;">Kiran Kumar Vejendla</a> &middot; <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#4b83bc;text-decoration:none;">vejendlakirankumar@cityu.edu</a></span>
 </footer>
 <?php wp_footer(); ?>

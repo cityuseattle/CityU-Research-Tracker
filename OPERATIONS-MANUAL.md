@@ -1,7 +1,7 @@
 # Operations Manual — CityU Research Review Portal
 
 > **Version:** 1.0.0  
-> **Author:** Kiran Kumar Vejendla — [vejendlakirankumar@cityu.edu](mailto:vejendlakirankumar@cityu.edu)  
+> **Author:** Kiran Kumar Vejendla — [vejendlakirankumar@cityu.edu] and Jemell Garris - [] (mailto:vejendlakirankumar@cityu.edu)  
 > **Institution:** City University of Seattle · School of Technology and Computing (STC)  
 > **Last updated:** March 2026
 
@@ -22,8 +22,10 @@
 11. [Data File Reference](#data-file-reference)
 12. [Monitoring & Logging](#monitoring--logging)
 13. [Troubleshooting](#troubleshooting)
-14. [Security Hardening](#security-hardening)
-15. [Updating the Plugin](#updating-the-plugin)
+14. [Enabling HTTPS (Let's Encrypt)](#enabling-https-lets-encrypt)
+15. [Microsoft Entra SSO](#microsoft-entra-sso)
+16. [Security Hardening](#security-hardening)
+17. [Updating the Plugin](#updating-the-plugin)
 
 ---
 
@@ -236,6 +238,10 @@ In the portal admin panel, go to **Admin → Users**, find each reviewer, and co
 ### 6. Configure email notifications (production)
 
 WordPress uses `wp_mail()` for notifications. On a production server configure an SMTP plugin or set up PHP's `sendmail` to ensure delivery. Recommended: install **WP Mail SMTP** and configure with your institution's SMTP server.
+
+### 7. Configure Microsoft Entra SSO (optional)
+
+If your institution uses Microsoft Entra ID (Azure AD) for identity, enable SSO so users log in with their university account instead of a WordPress password. See the full [Microsoft Entra SSO](#microsoft-entra-sso) section for detailed steps.
 
 ---
 
@@ -731,6 +737,272 @@ make db-import   # if a backup exists
 
 ---
 
+## Enabling HTTPS (Let's Encrypt)
+
+Microsoft Entra ID **requires** an `https://` redirect URI for any non-localhost application. Run this section before configuring SSO.
+
+### Step 1 — Open port 443 in the Azure NSG
+
+1. In the [Azure Portal](https://portal.azure.com), navigate to your VM → **Networking** → **Network security group**.
+2. Click **Add inbound security rule**:
+   - Source: `Any`
+   - Source port ranges: `*`
+   - Destination: `Any`
+   - Destination port ranges: `443`
+   - Protocol: `TCP`
+   - Action: `Allow`
+   - Priority: `340` (or any unused priority below `Deny All`)
+   - Name: `HTTPS`
+3. Click **Add** and wait ~30 seconds for the rule to apply.
+
+### Step 2 — Run the HTTPS setup script
+
+SSH into the VM and run the provided script:
+
+```bash
+ssh azureadmin@rcgapimtest.eastus2.cloudapp.azure.com
+cd /mnt/c/Development/CityU-Research-Tracker
+sudo bash scripts/enable-https.sh
+```
+
+The script will:
+- Install **Certbot** and the Apache plugin
+- Obtain a free **Let's Encrypt** certificate for `rcgapimtest.eastus2.cloudapp.azure.com`
+- Configure Apache to serve HTTPS on port 443
+- Add an automatic **HTTP → HTTPS redirect** (301)
+- Update WordPress `siteurl` and `home` to `https://`
+- Install an **auto-renewal cron** (certificates renew every 60 days; valid for 90)
+
+> The script is idempotent — safe to re-run if something fails partway through.
+
+### Step 3 — Verify HTTPS is working
+
+```bash
+# HTTP should redirect to HTTPS
+curl -I http://rcgapimtest.eastus2.cloudapp.azure.com
+# Expected: HTTP/1.1 301 Moved Permanently  + Location: https://...
+
+# HTTPS should return 200
+curl -I https://rcgapimtest.eastus2.cloudapp.azure.com
+# Expected: HTTP/1.1 200 OK
+```
+
+Open `https://rcgapimtest.eastus2.cloudapp.azure.com` in a browser — you should see a padlock (🔒) and no security warning.
+
+### Step 4 — Update the Redirect URI everywhere
+
+After enabling HTTPS, update the redirect URI in **both** places:
+
+| Where | Old value | New value |
+|-------|-----------|----------|
+| Portal Settings → SSO → Redirect URI | `http://rcgapimtest.../auth/callback` | `https://rcgapimtest.eastus2.cloudapp.azure.com/wp-json/research-portal/v1/auth/callback` |
+| Azure App Registration → Authentication → Redirect URIs | same `http://` URI | same `https://` URI |
+
+### Certificate renewal
+
+Let's Encrypt certificates are valid for 90 days. Certbot installs a cron job at `/etc/cron.d/certbot` that runs twice daily and automatically renews any certificate expiring within 30 days, then reloads Apache.
+
+To manually test renewal:
+```bash
+sudo certbot renew --dry-run
+```
+
+To check certificate expiry:
+```bash
+sudo certbot certificates
+```
+
+---
+
+## Microsoft Entra SSO
+
+The portal supports Microsoft Entra ID (Azure AD) as a Single Sign-On provider. When enabled, users click **Login with Microsoft** and are authenticated by Entra — no separate WordPress password is required.
+
+> **Authorization is still local.** Entra only proves *who* the user is. Portal roles (Student / Reviewer / Coordinator / Admin) are assigned by a portal administrator after first login. A brand-new Entra user has no portal access until a role is assigned.
+
+---
+
+### Prerequisites
+
+- An **Azure subscription** with permission to create or manage App Registrations in Entra ID.
+- **HTTPS must be enabled** on the portal server. Entra ID enforces `https://` redirect URIs for any non-localhost application. See [Enabling HTTPS (Let's Encrypt)](#enabling-https-lets-encrypt) above.
+- You have the portal's public HTTPS URL: `https://rcgapimtest.eastus2.cloudapp.azure.com`.
+
+---
+
+### Step 1 — Configure the App Registration in Azure Portal
+
+1. Sign in to [portal.azure.com](https://portal.azure.com) and open **Microsoft Entra ID**.
+
+2. Go to **App registrations** → select your existing enterprise application (or create a new one).
+
+3. On the **Overview** page, note down:
+   - **Application (client) ID** — looks like `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+   - **Directory (tenant) ID** — same format
+
+4. Go to **Authentication** → **Add a platform** → choose **Web**.
+
+5. Set the **Redirect URI** to:
+   ```
+   https://rcgapimtest.eastus2.cloudapp.azure.com/wp-json/research-portal/v1/auth/callback
+   ```
+   *(Replace the hostname with your actual domain if different. Must be `https://` — Entra does not accept plain `http://` for non-localhost URIs.)*
+
+6. Under **Implicit grant and hybrid flows**, leave both checkboxes **unchecked** (the portal uses the Authorization Code flow).
+
+7. Click **Save**.
+
+8. Go to **Certificates & secrets** → **Client secrets** → **New client secret**.
+   - Description: `Research Review Portal`
+   - Expiry: choose an appropriate expiry (12 or 24 months)
+   - Click **Add**, then **immediately copy the secret Value** — it is only shown once.
+
+9. Go to **API permissions** → confirm the following **delegated** permissions are present (they are defaults for any App Registration):
+   - `openid`
+   - `profile`
+   - `email`
+
+   If any are missing, click **Add a permission → Microsoft Graph → Delegated → add them**. Then click **Grant admin consent**.
+
+---
+
+### Step 2 — Configure SSO in the Portal Settings UI
+
+This is the **recommended method** — credentials are stored encrypted in the WordPress database using AES-256-GCM.
+
+1. Log in to the portal as a **Coordinator** or **Admin**.
+
+2. In the left sidebar, click **Settings → Portal Settings**.
+
+3. Scroll to the **Single Sign-On (SSO)** fieldset:
+
+   | Field | Value |
+   |-------|-------|
+   | Enable SSO | ✅ checked |
+   | SSO Provider | Microsoft Entra ID (Azure AD) |
+   | Tenant ID | paste your Directory (tenant) ID |
+   | Client ID | paste your Application (client) ID |
+   | Client Secret | paste the secret value you copied in Step 1.8 |
+   | Redirect URI | `https://rcgapimtest.eastus2.cloudapp.azure.com/wp-json/research-portal/v1/auth/callback` |
+   | Auto-provision new users | ✅ recommended (creates WP account on first login; no portal role until admin assigns one) |
+
+   > **Note:** If the Redirect URI field shows `http://` (before HTTPS was enabled), update it to `https://` here and in the Azure App Registration.
+
+4. Click **💾 Save Settings**.
+
+5. The client secret is encrypted with AES-256-GCM before being written to the database. The Settings page will show `[encrypted]` in the secret field on subsequent visits — this is expected.
+
+---
+
+### Step 3 — (Alternative) Configure via `wp-config.php` constants
+
+If you prefer to keep all secrets out of the database entirely, add these constants to `wp-config.php` on the VM **before** the `/* That's all, stop editing! */` line.
+
+```bash
+ssh azureadmin@rcgapimtest.eastus2.cloudapp.azure.com
+sudo nano /var/www/html/wp-config.php
+```
+
+Add:
+
+```php
+// ── Research Review Portal — Entra SSO ──────────────────────────────────
+define( 'RRP_AUTH_PROVIDER',      'entra' );
+define( 'RRP_ENTRA_TENANT_ID',    'YOUR-TENANT-ID-HERE' );
+define( 'RRP_ENTRA_CLIENT_ID',    'YOUR-CLIENT-ID-HERE' );
+define( 'RRP_ENTRA_CLIENT_SECRET','YOUR-CLIENT-SECRET-HERE' );
+define( 'RRP_ENTRA_REDIRECT_URI', 'https://rcgapimtest.eastus2.cloudapp.azure.com/wp-json/research-portal/v1/auth/callback' );
+```
+
+> Constants take **priority over** the database settings. If both are set, `wp-config.php` wins.
+
+> ⚠ **Never commit `wp-config.php` to git.** It is already in `.gitignore`.
+
+---
+
+### Step 4 — Test the SSO login flow
+
+1. Open a **private/incognito browser window**.
+
+2. Navigate to `https://rcgapimtest.eastus2.cloudapp.azure.com` (the portal home page) **or** go directly to `https://rcgapimtest.eastus2.cloudapp.azure.com/wp-login.php`.
+
+3. Both login paths now redirect automatically to `login.microsoftonline.com` when Entra SSO is enabled.
+
+4. Sign in with a university Microsoft account.
+
+5. On first login, a new WordPress account is created automatically (if Auto-provision is on). The portal will show a message that no role is assigned yet.
+
+6. As an admin, go to **Settings → Portal Settings** or **WP Admin → Users**, find the new user, and assign the appropriate portal role (`rrp_student`, `rrp_reviewer`, etc.).
+
+7. The user can now log in again and access the portal with their assigned role.
+
+---
+
+### Step 5 — Test the logout flow
+
+Logging out calls the Entra single-logout endpoint, which signs the user out of Entra SSO as well. Verify by:
+1. Clicking **Logout** in the portal top bar.
+2. Confirming the browser lands back on the portal home page.
+3. Clicking **Login** again — the user should be prompted by Microsoft (not silently re-authenticated).
+
+---
+
+### Rotating the Client Secret
+
+Entra client secrets expire. To rotate:
+
+1. In [portal.azure.com](https://portal.azure.com), go to your App Registration → **Certificates & secrets** → add a **New client secret**.
+2. Copy the new secret value.
+3. In the portal **Settings → Portal Settings**, paste the new secret and click **Save**. The old secret is overwritten.
+4. Back in Azure Portal, delete the old (expired) secret.
+5. Test a login to confirm the new secret works before the old one expires.
+
+---
+
+### Emergency Local Login Bypass
+
+The login page always shows **both** options: a **Sign in with Microsoft** button (visible only when Entra SSO is enabled) and the standard WordPress username/password form below it. There is no auto-redirect, so local login is always accessible at:
+
+```
+https://rcgapimtest.eastus2.cloudapp.azure.com/wp-login.php
+```
+
+Simply scroll past the Microsoft button and use the username/password form. If you need to disable SSO entirely from the command line:
+
+```bash
+wp --path=/var/www/html --allow-root eval-file /tmp/disable_sso.php
+# or directly:
+wp --path=/var/www/html --allow-root option patch update rrp_portal_settings sso_enabled false --format=json
+```
+
+---
+
+### Troubleshooting SSO
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Redirected to WP login instead of Microsoft | SSO not enabled or tenant/client ID missing | Check Portal Settings → SSO fields are filled and Enable SSO is checked |
+| `wp-login.php` shows password form | SSO is disabled or `local_login=1` bypass is in use | Enable SSO in Portal Settings; remove `?local_login=1` from URL |
+| `AADSTS50011 — redirect URI mismatch` | Redirect URI in Entra doesn't exactly match the portal's URI | Copy the URI character-for-character from Portal Settings into Entra App Registration → Authentication |
+| `AADSTS700016 — application not found` | Wrong tenant ID | Verify Directory (tenant) ID in Portal Settings matches the App Registration |
+| `AADSTS7000215 — invalid client secret` | Secret expired or copied incorrectly | Rotate the secret (see above) |
+| `403 Invalid authentication state` | Browser cleared cookies mid-flow | Retry from a clean browser tab |
+| User logs in but sees "No portal role" | Auto-provision created account but no role assigned | Admin assigns role via Users panel or WP Admin → Users |
+| Logout doesn't sign out of Microsoft | Entra single-logout not configured | Verify `post_logout_redirect_uri` is an allowed reply URL in Entra App Registration → Authentication |
+
+---
+
+### Disabling SSO
+
+To revert to WordPress-native login:
+
+- **UI method:** Portal Settings → uncheck **Enable SSO** → Save.
+- **wp-config method:** Change `RRP_AUTH_PROVIDER` from `'entra'` to `'wordpress'` (or remove the constant entirely).
+
+Existing user accounts are preserved — users will just log in with their WordPress password instead.
+
+---
+
 ## Security Hardening
 
 ### Required for any internet-facing deployment
@@ -750,7 +1022,7 @@ make db-import   # if a backup exists
    </Location>
    ```
 
-4. **Enable HTTPS** with Let's Encrypt (see [DEPLOYMENT.md](DEPLOYMENT.md) — Adding HTTPS section).
+4. **Enable HTTPS** with Let's Encrypt — see [Enabling HTTPS (Let's Encrypt)](#enabling-https-lets-encrypt) in this manual. Run `sudo bash scripts/enable-https.sh` on the VM.
 
 5. **File permission hardening** — the `data/` directory should not be web-accessible directly. Apache serves PHP which reads the files; direct URL access to `.json` files should return 403:
    ```apache

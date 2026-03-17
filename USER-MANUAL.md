@@ -1,7 +1,7 @@
 # User Manual — CityU Research Review Portal
 
 > **Version:** 1.0.0  
-> **Author:** Kiran Kumar Vejendla — [vejendlakirankumar@cityu.edu](mailto:vejendlakirankumar@cityu.edu)  
+> **Author:** Kiran Kumar Vejendla — [vejendlakirankumar@cityu.edu] and Jemell Garris - [] (mailto:vejendlakirankumar@cityu.edu)  
 > **Institution:** City University of Seattle · School of Technology and Computing (STC)  
 > **Last updated:** March 2026
 
