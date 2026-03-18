@@ -276,6 +276,15 @@ class RRP_Auth_Provider {
 			);
 		}
 
+		// 7b. Reject locked accounts before establishing any session.
+		if ( get_user_meta( $user_id, 'rrp_locked', true ) ) {
+			wp_die(
+				esc_html__( 'Your account has been locked. Please contact the portal administrator.', 'rrp' ),
+				esc_html__( 'Account Locked', 'rrp' ),
+				array( 'response' => 403 )
+			);
+		}
+
 		// 8. Establish WordPress session
 		wp_clear_auth_cookie();
 		wp_set_current_user( $user_id );

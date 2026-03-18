@@ -333,6 +333,8 @@
 .rrp-analytics-tile.rrp-tile-amber .rrp-analytics-tile-val { color: #b45309; }
 .rrp-analytics-tile.rrp-tile-red   { border-color: #fecaca; background: #fef2f2; }
 .rrp-analytics-tile.rrp-tile-red   .rrp-analytics-tile-val { color: #b91c1c; }
+.rrp-analytics-tile.rrp-tile-gray  { border-color: #cbd5e1; background: #f8fafc; }
+.rrp-analytics-tile.rrp-tile-gray  .rrp-analytics-tile-val { color: #64748b; }
 
 /* ── SVG Line Chart ──────────────────────────────────────────────────────── */
 .rrp-linechart-legend {
@@ -503,11 +505,13 @@
 .rrp-portal .rrp-feedback-body ul, .rrp-portal .rrp-feedback-body ol { margin: 0.25rem 0 0.25rem 1.25rem; padding: 0; }
 .rrp-portal .rrp-feedback-body blockquote { border-left: 3px solid #ccc; margin: 0.4rem 0; padding-left: 0.75rem; color: #555; }
 
-/* ── Quill editor inside portal ── */
-.rrp-portal .ql-container { font-family: inherit; font-size: 0.9rem; }
-.rrp-portal .ql-toolbar.ql-snow { border-radius: 4px 4px 0 0; background: #f9fafb; border-color: var(--rrp-border); }
-.rrp-portal .ql-container.ql-snow { border-radius: 0 0 4px 4px; border-color: var(--rrp-border); min-height: 120px; }
-.rrp-portal #rrp-feedback-editor .ql-editor { min-height: 100px; }
+/* ── Built-in rich-text editor (no CDN — strict CSP compatible) ── */
+.rrp-portal .rrp-rte-toolbar { display: flex; flex-wrap: wrap; gap: .2rem; padding: .3rem .45rem; background: #f9fafb; border: 1px solid var(--rrp-border, #ddd); border-bottom: none; border-radius: .3rem .3rem 0 0; user-select: none; }
+.rrp-portal .rrp-rte-btn { padding: .15rem .45rem; border: 1px solid #d1d5db; border-radius: .2rem; background: #fff; font-size: .8rem; cursor: pointer; line-height: 1.4; min-width: 1.6rem; }
+.rrp-portal .rrp-rte-btn:hover, .rrp-portal .rrp-rte-btn:focus { background: #e5e7eb; outline: none; }
+.rrp-portal .rrp-rte-sep { width: 1px; background: #d1d5db; margin: .1rem .15rem; align-self: stretch; }
+.rrp-portal .rrp-rte-editor { min-height: 120px; padding: .5rem .6rem; border: 1px solid var(--rrp-border, #ddd); border-radius: 0 0 .3rem .3rem; background: #fff; font-size: .9rem; line-height: 1.55; outline: none; overflow-y: auto; word-break: break-word; }
+.rrp-portal .rrp-rte-editor.rrp-rte-empty::before { content: attr(data-placeholder); color: #9ca3af; pointer-events: none; display: block; }
 
 /* ── Type badge ── */
 .rrp-portal .rrp-type-badge { display: inline-block; background: var(--rrp-primary); color: #fff; font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; vertical-align: middle; margin-left: 0.4rem; }
@@ -1121,6 +1125,13 @@
   background: #fff;
   box-shadow: 0 4px 20px rgba(0,0,0,0.1);
 }
+/* Inline panel appears directly below a submission row */
+.rrp-assign-panel-inline {
+  margin: 0;
+  border-radius: 0 0 8px 8px;
+  border-top: none;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+}
 .rrp-assign-panel-inner { padding: 1.5rem 2rem; }
 .rrp-assign-panel-header { margin-bottom: 1rem; }
 .rrp-assign-panel-header h2 { margin: 0 0 0.5rem; font-size: 1.15rem; }
@@ -1520,6 +1531,16 @@
   border: none;
 }
 .rrp-btn.danger:hover { background: #b91c1c; }
+.rrp-btn.warning {
+  background: #d97706;
+  color: #fff;
+  border: none;
+}
+.rrp-btn.warning:hover { background: #b45309; }
+.rrp-user-locked { opacity: .78; background: #fff8f8 !important; }
+/* Collaborative notes */
+.rrp-collab-block summary { user-select: none; }
+.rrp-co-badge { display:inline-block; background:#e0f2fe; color:#0369a1; border-radius:20px; padding:.1rem .55rem; font-size:.73rem; font-weight:600; border:1px solid #bae6fd; }
 
 /* ── Onboarding Wizard ────────────────────────────────────────────────────── */
 .rrp-onboard-wrap { max-width: 780px; margin: 0 auto; }
@@ -1724,6 +1745,120 @@
   list-style: none; margin: 0; padding: 0;
   display: flex; flex-direction: column; gap: .6rem;
 }
+
+/* ── Withdrawn / Cancelled status badge ─────────────────────────────────── */
+.rrp-portal .rrp-dec-withdrawn { background: #f1f5f9; color: #64748b; border: 1px solid #cbd5e1; }
+
+/* ── Locked submission banner ────────────────────────────────────────────── */
+.rrp-portal .rrp-locked-banner {
+  background: #fef9c3; border: 1px solid #fbbf24; border-radius: 6px;
+  padding: .75rem 1rem; margin-bottom: 1rem;
+  font-size: .92rem; color: #92400e;
+}
+
+/* ── Double-blind review banner ──────────────────────────────────────────── */
+.rrp-portal .rrp-blind-banner {
+  background: #eff6ff; border: 1px solid #93c5fd; border-radius: .4rem;
+  padding: .6rem 1rem; margin-bottom: .75rem;
+  font-size: .88rem; color: #1e40af;
+}
+
+/* ── Decision appeal banner & panel ─────────────────────────────────────── */
+.rrp-portal .rrp-appeal-banner {
+  background: #fef3c7; border: 1px solid #f59e0b; border-radius: .4rem;
+  padding: .6rem 1rem; margin-bottom: .75rem;
+  font-size: .88rem; color: #92400e;
+}
+.rrp-portal .rrp-appeal-panel {
+  background: #f0f9ff; border: 1px solid #93c5fd;
+  border-radius: .4rem; padding: .75rem 1rem; margin-top: .5rem;
+}
+
+/* ── Revision diff modal ─────────────────────────────────────────────────── */
+.rrp-portal .rrp-diff-modal {
+  border: 1px solid var(--rrp-border); border-radius: .5rem;
+  overflow: hidden;
+}
+.rrp-portal .rrp-diff-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: .6rem 1rem; background: #f8fafc;
+  border-bottom: 1px solid var(--rrp-border);
+}
+.rrp-portal .rrp-diff-header h3 { margin: 0; font-size: .95rem; }
+.rrp-portal .rrp-diff-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.rrp-portal .rrp-diff-table th,
+.rrp-portal .rrp-diff-table td { padding: .45rem .65rem; border: 1px solid var(--rrp-border); vertical-align: top; }
+.rrp-portal .rrp-diff-table th { background: #f1f5f9; font-weight: 600; }
+.rrp-portal .rrp-diff-table td:first-child { width: 10%; font-weight: 600; background: #f8fafc; white-space: nowrap; }
+.rrp-portal .rrp-diff-table td.rrp-diff-old { background: #fff8f8; }
+.rrp-portal .rrp-diff-table td.rrp-diff-new { background: #f0fdf4; }
+.rrp-portal .rrp-diff-table tr.rrp-diff-changed > td { border-left-color: #f59e0b; }
+.rrp-portal .rrp-diff-table tr.rrp-diff-changed > td:first-child { border-left: 3px solid #f59e0b; }
+.rrp-portal .rrp-diff-round-sel { padding: .3rem .5rem; border: 1px solid var(--rrp-border); border-radius: 4px; font-size: .88rem; background: #fff; }
+
+/* ── Two-phase submission phase badge ───────────────────────────────────── */
+.rrp-portal .rrp-phase-badge {
+  display: inline-block; padding: .1rem .45rem; border-radius: 3px;
+  font-size: .78rem; font-weight: 600; vertical-align: middle;
+}
+.rrp-portal .rrp-phase-badge.phase-1 { background: #fef9c3; color: #92400e; border: 1px solid #fbbf24; }
+.rrp-portal .rrp-phase-badge.phase-2 { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
+
+/* ── Deadline Calendar ───────────────────────────────────────────────────── */
+.rrp-cal-header { display: flex; align-items: center; gap: .75rem; margin-bottom: 1rem; }
+.rrp-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 1rem; }
+.rrp-cal-dow { text-align: center; font-size: .75rem; font-weight: 600; color: var(--rrp-text-muted); padding: .3rem 0; }
+.rrp-cal-cell { min-height: 72px; border: 1px solid var(--rrp-border); border-radius: 4px; padding: .25rem; font-size: .75rem; background: #fff; overflow: hidden; }
+.rrp-cal-cell.rrp-cal-empty { background: var(--rrp-bg-page); border-color: transparent; }
+.rrp-cal-cell.rrp-cal-today { border-color: var(--rrp-primary); background: var(--rrp-border-light, #f0f6ff); }
+.rrp-cal-cell.rrp-cal-has-events { background: #fefce8; }
+.rrp-cal-date { font-weight: 600; color: var(--rrp-text-muted); font-size: .78rem; margin-bottom: .15rem; }
+.rrp-cal-event {
+  cursor: pointer; background: var(--rrp-primary, #2563eb); color: #fff;
+  border-radius: 3px; padding: .1rem .3rem; margin-top: .1rem;
+  font-size: .68rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rrp-cal-event:hover { opacity: .85; }
+
+/* ── Add-to-calendar dropdown ────────────────────────────────────────────── */
+.rrp-cal-dropdown {
+  position: fixed; z-index: 9999; background: #fff;
+  border: 1px solid var(--rrp-border); border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.15); min-width: 200px; overflow: hidden;
+}
+.rrp-cal-opt {
+  display: block; padding: .6rem 1rem; color: var(--rrp-text);
+  text-decoration: none; font-size: .88rem; border-bottom: 1px solid var(--rrp-border);
+}
+.rrp-cal-opt:last-child { border-bottom: none; }
+.rrp-cal-opt:hover { background: var(--rrp-border-light, #f0f4f8); }
+
+/* ── Administration Panel ───────────────────────────────────────────────── */
+.rrp-admin-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+.rrp-admin-card {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  border: 1px solid var(--rrp-border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0,0,0,.06);
+}
+.rrp-admin-card-icon {
+  font-size: 2rem;
+  flex-shrink: 0;
+  line-height: 1;
+  padding-top: .1rem;
+}
+.rrp-admin-card-body { flex: 1; min-width: 0; }
+.rrp-admin-card-body h3 { margin: 0 0 .5rem; font-size: 1.05rem; }
+.rrp-admin-card-body p  { margin: 0 0 .85rem; font-size: .9rem; color: var(--rrp-text-muted); line-height: 1.5; }
 .rrp-audit-entry {
   border-left: 3px solid #003d66;
   padding: .45rem .75rem;

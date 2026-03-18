@@ -34,6 +34,8 @@ class Research_Review_Portal {
 		add_action( 'template_redirect', array( __CLASS__, 'maybe_render_homepage' ) );
 		// Login page branding
 		add_action( 'login_enqueue_scripts', array( __CLASS__, 'login_styles' ) );
+		add_action( 'login_head',            array( __CLASS__, 'login_favicon' ) );
+		add_filter( 'login_title',           array( __CLASS__, 'login_page_title' ) );
 		add_filter( 'login_headerurl',       array( __CLASS__, 'login_header_url' ) );
 		add_filter( 'login_headertext',      array( __CLASS__, 'login_header_text' ) );
 		// Show login choice: Entra SSO button + local form.
@@ -42,6 +44,8 @@ class Research_Review_Portal {
 		add_action( 'wp_login', array( __CLASS__, 'clear_entra_session_flag' ), 10, 2 );
 		// Clear the Entra session flag on any logout (before session is destroyed).
 		add_action( 'wp_logout', array( __CLASS__, 'clear_entra_session_flag_on_logout' ) );
+		// Block locked accounts from logging in via username+password.
+		add_filter( 'authenticate', array( __CLASS__, 'block_locked_users' ), 30, 3 );
 	}
 
 	/**
@@ -85,6 +89,23 @@ class Research_Review_Portal {
 	}
 
 	/**
+	 * Prevent locked accounts from completing login (password or any auth method
+	 * that goes through the authenticate filter).
+	 */
+	public static function block_locked_users( $user, $username, $password ) {
+		if ( is_wp_error( $user ) || ! ( $user instanceof WP_User ) ) {
+			return $user;
+		}
+		if ( get_user_meta( $user->ID, 'rrp_locked', true ) ) {
+			return new WP_Error(
+				'account_locked',
+				__( 'Your account has been locked. Please contact the portal administrator.', 'rrp' )
+			);
+		}
+		return $user;
+	}
+
+	/**
 	 * Clear the Entra session flag when a user logs out (any provider).
 	 * Hooked to wp_logout which fires before the session is destroyed,
 	 * so get_current_user_id() is still valid.
@@ -96,16 +117,31 @@ class Research_Review_Portal {
 		}
 	}
 
+	public static function login_favicon() {
+		$logo_raw = RRP_Portal_Settings::get( 'university_logo_url' );
+		$logo_url = esc_url( $logo_raw ?: RRP_PLUGIN_URL . 'assets/city-university-logo.svg' );
+		echo '<link rel="icon" href="' . $logo_url . '" type="image/svg+xml">' . "\n";
+		echo '<link rel="shortcut icon" href="' . $logo_url . '">' . "\n";
+	}
+
+	public static function login_page_title() {
+		$portal_name = RRP_Portal_Settings::get( 'portal_name' ) ?: 'CityU Research Portal';
+		return esc_html( $portal_name ) . ' &#8212; Login';
+	}
+
 	public static function login_styles() {
-		$logo_url = esc_url( RRP_PLUGIN_URL . 'assets/city-university-logo.svg' );
-		echo '<style>
+		$logo_raw = RRP_Portal_Settings::get( 'university_logo_url' );
+		$logo_url = esc_url( $logo_raw ?: RRP_PLUGIN_URL . 'assets/city-university-logo.svg' );
+		$portal_name = RRP_Portal_Settings::get( 'portal_name' ) ?: 'Research Review Portal';
+		$css = '
 #login h1 a, .login h1 a {
 	background-image: url(' . $logo_url . ') !important;
 	background-size: contain !important;
 	background-repeat: no-repeat !important;
 	background-position: center !important;
-	width: 220px !important;
-	height: 60px !important;
+	width: 240px !important;
+	height: 70px !important;
+	display: block !important;
 	filter: none !important;
 }
 body.login { background: #f4f6f9 !important; }
@@ -146,7 +182,10 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 	background: #ddd;
 }
 .rrp-divider span { padding: 0 10px; white-space: nowrap; }
-</style>' . "\n";
+';
+		// Attach inline CSS to the built-in login stylesheet so it is printed
+		// AFTER login.css — this ensures our logo overrides the WP default.
+		wp_add_inline_style( 'login', $css );
 	}
 
 	public static function login_header_url() {
@@ -299,8 +338,16 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 		$role_labels = RRP_User_Management::get_role_labels( $user_roles );
 		$role_label  = implode( ' · ', $role_labels );
 
+		// Public submissions config — needed for guest registration option
+		$_pub_cfg            = Portal_Data::read_config()['publicSubmissions'] ?? array();
+		$_pub_enabled        = ! empty( $_pub_cfg['enabled'] );
+		$_pub_allowed_types  = is_array( $_pub_cfg['allowedTypes'] ?? null ) ? array_values( $_pub_cfg['allowedTypes'] ) : array();
+
+		// F12: PII fields (firstName, lastName, degree, department, expertise) are intentionally
+		// omitted from window.RRP. They are fetched on-demand via GET /portal-users/me and
+		// never broadcast to the global JS scope.
 		wp_add_inline_script( 'research-review-portal', sprintf(
-			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: %s, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s, userRoles: %s, userEmail: %s, userId: %s, firstName: %s, lastName: %s, degree: %s, department: %s, expertise: %s, universityName: %s, universityShortName: %s, universityLogo: %s, portalName: %s, ssoEnabled: %s, ssoProvider: %s };',
+			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: %s, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s, userRoles: %s, userEmail: %s, userId: %s, universityName: %s, universityShortName: %s, universityLogo: %s, portalName: %s, ssoEnabled: %s, ssoProvider: %s, publicSubmissionsEnabled: %s, publicAllowedTypes: %s };',
 			wp_json_encode( rest_url( 'research-portal/v1' ) ),
 			wp_json_encode( wp_create_nonce( 'wp_rest' ) ),
 			wp_json_encode( $logged_in ),
@@ -311,17 +358,14 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 			wp_json_encode( $role_labels ),
 			wp_json_encode( $current_user->exists() ? $current_user->user_email : '' ),
 			wp_json_encode( $current_user->exists() ? (int) $current_user->ID : 0 ),
-			wp_json_encode( $current_user->exists() ? $current_user->first_name : '' ),
-			wp_json_encode( $current_user->exists() ? $current_user->last_name : '' ),
-			wp_json_encode( $current_user->exists() ? (string) ( get_user_meta( $current_user->ID, 'rrp_degree', true ) ?: '' ) : '' ),
-			wp_json_encode( $current_user->exists() ? (string) ( get_user_meta( $current_user->ID, 'rrp_department', true ) ?: '' ) : '' ),
-			wp_json_encode( $current_user->exists() ? (string) ( get_user_meta( $current_user->ID, 'rrp_expertise', true ) ?: '' ) : '' ),
 			wp_json_encode( RRP_Portal_Settings::get( 'university_name' ) ),
 			wp_json_encode( RRP_Portal_Settings::get( 'university_short_name' ) ),
 			wp_json_encode( RRP_Portal_Settings::get( 'university_logo_url' ) ?: RRP_PLUGIN_URL . 'assets/city-university-logo.svg' ),
 			wp_json_encode( RRP_Portal_Settings::get( 'portal_name' ) ),
 			wp_json_encode( RRP_Portal_Settings::get( 'sso_enabled' ) ),
-			wp_json_encode( RRP_Portal_Settings::get( 'sso_provider' ) )
+			wp_json_encode( RRP_Portal_Settings::get( 'sso_provider' ) ),
+			wp_json_encode( $_pub_enabled ),
+			wp_json_encode( $_pub_allowed_types )
 		), 'before' );
 
 		ob_start();
@@ -623,6 +667,15 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 			wp_safe_redirect( add_query_arg( 'portal', '1', home_url( '/' ) ) );
 			exit;
 		}
+		// Non-logged-in: if ?portal=1 and public submissions enabled, serve portal JS page
+		// so renderSelection() / renderPublicRegistration() in JS can handle the form.
+		if ( $show_portal ) {
+			$_pr_cfg = Portal_Data::read_config()['publicSubmissions'] ?? array();
+			if ( ! empty( $_pr_cfg['enabled'] ) ) {
+				self::output_public_portal_page();
+				exit;
+			}
+		}
 		self::output_guest_homepage();
 		exit;
 	}
@@ -646,10 +699,21 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 		wp_enqueue_style( 'research-review-portal', RRP_PLUGIN_URL . 'assets/portal.css', array(), (string) filemtime( RRP_PLUGIN_DIR . 'assets/portal.css' ) );
 		wp_enqueue_script( 'mammoth-js', 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.7.0/mammoth.browser.min.js', array(), '1.7.0', true );
 		wp_enqueue_script( 'research-review-portal', RRP_PLUGIN_URL . 'assets/portal.js', array( 'mammoth-js' ), (string) filemtime( RRP_PLUGIN_DIR . 'assets/portal.js' ), true );
+		// Public submissions config
+		$_pub_cfg2           = Portal_Data::read_config()['publicSubmissions'] ?? array();
+		$_pub_enabled2       = ! empty( $_pub_cfg2['enabled'] );
+		$_pub_allowed_types2 = is_array( $_pub_cfg2['allowedTypes'] ?? null ) ? array_values( $_pub_cfg2['allowedTypes'] ) : array();
+
 		$rrp_allowed_types = (array) ( get_user_meta( get_current_user_id(), 'rrp_allowed_submission_types', true ) ?: [] );
+		// Public users get submission types from the public submissions config
+		if ( in_array( 'rrp_public', $user_roles, true ) ) {
+			$rrp_allowed_types = $_pub_allowed_types2;
+		}
 		$rrp_program_ids   = (array) ( get_user_meta( get_current_user_id(), 'rrp_program_ids', true ) ?: [] );
+		// F12: PII fields (firstName, lastName, degree, department, expertise) are intentionally
+		// omitted from window.RRP. They are fetched on-demand via GET /portal-users/me.
 		wp_add_inline_script( 'research-review-portal', sprintf(
-			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: true, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s, userEmail: %s, allowedTypes: %s, userId: %s, programIds: %s, userRoles: %s, firstName: %s, lastName: %s, degree: %s, department: %s, expertise: %s, universityName: %s, universityShortName: %s, universityLogo: %s, portalName: %s, ssoEnabled: %s, ssoProvider: %s };',
+			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: true, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s, userEmail: %s, allowedTypes: %s, userId: %s, programIds: %s, userRoles: %s, universityName: %s, universityShortName: %s, universityLogo: %s, portalName: %s, ssoEnabled: %s, ssoProvider: %s, publicSubmissionsEnabled: %s, publicAllowedTypes: %s };',
 			wp_json_encode( rest_url( 'research-portal/v1' ) ),
 			wp_json_encode( wp_create_nonce( 'wp_rest' ) ),
 			wp_json_encode( '' ),
@@ -661,25 +725,23 @@ body.login .button-primary:hover, body.login .button-primary:focus { background:
 			wp_json_encode( (int) get_current_user_id() ),
 			wp_json_encode( $rrp_program_ids ),
 			wp_json_encode( $role_labels ),
-			wp_json_encode( $current_user->first_name ),
-			wp_json_encode( $current_user->last_name ),
-			wp_json_encode( (string) ( get_user_meta( get_current_user_id(), 'rrp_degree', true ) ?: '' ) ),
-			wp_json_encode( (string) ( get_user_meta( get_current_user_id(), 'rrp_department', true ) ?: '' ) ),
-			wp_json_encode( (string) ( get_user_meta( get_current_user_id(), 'rrp_expertise', true ) ?: '' ) ),
 			wp_json_encode( $univ_name ),
 			wp_json_encode( $univ_short ),
 			wp_json_encode( $logo_raw ?: RRP_PLUGIN_URL . 'assets/city-university-logo.svg' ),
 			wp_json_encode( $portal_name ),
 			wp_json_encode( RRP_Portal_Settings::get( 'sso_enabled' ) ),
-			wp_json_encode( RRP_Portal_Settings::get( 'sso_provider' ) )
+			wp_json_encode( RRP_Portal_Settings::get( 'sso_provider' ) ),
+			wp_json_encode( $_pub_enabled2 ),
+			wp_json_encode( $_pub_allowed_types2 )
 		), 'before' );
 		?>
 <!DOCTYPE html><html <?php language_attributes(); ?>>
 <head>
 <meta charset="<?php bloginfo( 'charset' ); ?>">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title><?php echo esc_html( get_bloginfo( 'name' ) ); ?> &mdash; Research Portal</title>
+<title><?php echo esc_html( $portal_name ?: get_bloginfo( 'name' ) ); ?> &mdash; Research Portal</title>
 <?php wp_head(); ?>
+<link rel="icon" href="<?php echo $logo_url; ?>" type="image/svg+xml">
 <style>
 body{margin:0;padding:0;background:#f4f6f9}
 #wpadminbar{display:none!important}
@@ -713,8 +775,92 @@ body{margin:0;padding:0;background:#f4f6f9}
 </div>
 <footer style="text-align:center;padding:.9rem 1rem;font-size:.78rem;color:#9ca3af;border-top:1px solid #e5e7eb;margin-top:2rem;background:#f8fafc">
   &copy; <?php echo esc_html( gmdate( 'Y' ) ); ?> <?php echo esc_html( $univ_name ); ?> &middot; <?php echo esc_html( $portal_name ); ?> &middot; School of Technology and Computing (STC)<br>
-  <span style="font-size:.73rem;">Designed &amp; developed by <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#4b83bc;text-decoration:none;">Kiran Kumar Vejendla</a> &middot; <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#4b83bc;text-decoration:none;">vejendlakirankumar@cityu.edu</a></span>
+  <span style="font-size:.73rem;">Designed &amp; developed by <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#4b83bc;text-decoration:none;">Kiran Kumar Vejendla</a> &middot; <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#4b83bc;text-decoration:none;">vejendlakirankumar@cityu.edu</a> and <a href="mailto:garrisjemell@cityu.edu" style="color:#4b83bc;text-decoration:none;">Jemell Garris</a> &middot; <a href="mailto:garrisjemell@cityu.edu" style="color:#4b83bc;text-decoration:none;">garrisjemell@cityu.edu</a></span>
 </footer>
+<?php wp_footer(); ?>
+</body></html>
+		<?php
+	}
+
+	/**
+	 * Standalone portal page for non-logged-in users when public submissions are enabled.
+	 * Loads portal.js with isLoggedIn:false so renderSelection() shows the registration card.
+	 */
+	private static function output_public_portal_page() {
+		show_admin_bar( false );
+		// Use the standard WP login page, not the SSO endpoint, so public users
+		// can authenticate with the username+password they just created.
+		// After login WordPress redirects them back to /?portal=1 (the portal).
+		$login_url    = wp_login_url( home_url( '/?portal=1' ) );
+		$pub_cfg      = Portal_Data::read_config();
+		$pub_settings = $pub_cfg['publicSubmissions'] ?? array();
+		$pub_types    = is_array( $pub_settings['allowedTypes'] ?? null ) ? array_values( $pub_settings['allowedTypes'] ) : array();
+		$univ_name    = RRP_Portal_Settings::get( 'university_name' );
+		$univ_short   = RRP_Portal_Settings::get( 'university_short_name' );
+		$portal_name  = RRP_Portal_Settings::get( 'portal_name' ) ?: 'Research Review Portal';
+		$logo_raw     = RRP_Portal_Settings::get( 'university_logo_url' );
+		$logo_url     = esc_url( $logo_raw ?: RRP_PLUGIN_URL . 'assets/city-university-logo.svg' );
+
+		wp_enqueue_style( 'research-review-portal', RRP_PLUGIN_URL . 'assets/portal.css', array(), (string) filemtime( RRP_PLUGIN_DIR . 'assets/portal.css' ) );
+		wp_enqueue_script( 'mammoth-js', 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.7.0/mammoth.browser.min.js', array(), '1.7.0', true );
+		wp_enqueue_script( 'research-review-portal', RRP_PLUGIN_URL . 'assets/portal.js', array( 'mammoth-js' ), (string) filemtime( RRP_PLUGIN_DIR . 'assets/portal.js' ), true );
+
+		// F12: PII fields omitted — unauthenticated page has no user PII to expose.
+		wp_add_inline_script( 'research-review-portal', sprintf(
+			'window.RRP = { restBase: %s, nonce: %s, isLoggedIn: false, loginUrl: %s, logoutUrl: %s, userName: %s, userRole: %s, userRoles: %s, userEmail: %s, userId: %s, universityName: %s, universityShortName: %s, universityLogo: %s, portalName: %s, ssoEnabled: %s, ssoProvider: %s, publicSubmissionsEnabled: true, publicAllowedTypes: %s };',
+			wp_json_encode( rest_url( 'research-portal/v1' ) ),
+			wp_json_encode( wp_create_nonce( 'wp_rest' ) ),
+			wp_json_encode( esc_url( $login_url ) ),
+			wp_json_encode( esc_url( $login_url ) ),
+			wp_json_encode( '' ),
+			wp_json_encode( '' ),
+			wp_json_encode( array() ),
+			wp_json_encode( '' ),
+			wp_json_encode( 0 ),
+			wp_json_encode( $univ_name ),
+			wp_json_encode( $univ_short ),
+			wp_json_encode( $logo_raw ?: RRP_PLUGIN_URL . 'assets/city-university-logo.svg' ),
+			wp_json_encode( $portal_name ),
+			wp_json_encode( RRP_Portal_Settings::get( 'sso_enabled' ) ),
+			wp_json_encode( RRP_Portal_Settings::get( 'sso_provider' ) ),
+			wp_json_encode( $pub_types )
+		), 'before' );
+		?>
+<!DOCTYPE html><html <?php language_attributes(); ?>>
+<head>
+<meta charset="<?php bloginfo( 'charset' ); ?>">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title><?php echo esc_html( $portal_name ); ?> &mdash; Register to Submit</title>
+<?php wp_head(); ?>
+<link rel="icon" href="<?php echo $logo_url; ?>" type="image/svg+xml">
+<style>
+body{margin:0;padding:0;background:#f4f6f9}
+#wpadminbar{display:none!important}
+.rrp-ptopbar{background:#002f52;color:#fff;display:flex;justify-content:space-between;align-items:center;padding:0 1.5rem;height:56px;position:sticky;top:0;z-index:9999;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.rrp-ptopbar-left{display:flex;align-items:center;gap:.75rem}
+.rrp-ptopbar-logo{height:30px;width:auto;display:block;filter:brightness(0) invert(1)}
+.rrp-ptopbar-brand{font-size:.95rem;font-weight:700;letter-spacing:.02em;color:rgba(255,255,255,.9);border-left:1px solid rgba(255,255,255,.25);padding-left:.75rem}
+.rrp-ptopbar-right{display:flex;align-items:center;gap:.6rem;font-size:.85rem}
+.rrp-ptopbar-right a{color:#fff;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.28);padding:.3rem .9rem;border-radius:5px;font-size:.8rem;font-weight:600;text-decoration:none;transition:background .15s}
+.rrp-ptopbar-right a:hover{background:rgba(255,255,255,.22)}
+.rrp-portal-wrap{max-width:980px;margin:1.5rem auto;padding:0 1.25rem}
+</style>
+</head>
+<body>
+<div class="rrp-ptopbar">
+  <div class="rrp-ptopbar-left">
+    <img src="<?php echo $logo_url; ?>" alt="<?php echo esc_attr( $univ_name ); ?>" class="rrp-ptopbar-logo">
+    <span class="rrp-ptopbar-brand"><?php echo esc_html( $portal_name ); ?></span>
+  </div>
+  <div class="rrp-ptopbar-right">
+    <a href="<?php echo esc_url( $login_url ); ?>">Already have an account? Login &rarr;</a>
+  </div>
+</div>
+<div class="rrp-portal-wrap">
+  <div id="research-review-portal" class="rrp-portal">
+    <div class="rrp-loading">Loading&hellip;</div>
+  </div>
+</div>
 <?php wp_footer(); ?>
 </body></html>
 		<?php
@@ -723,6 +869,10 @@ body{margin:0;padding:0;background:#f4f6f9}
 	private static function output_guest_homepage() {
 		$login_url = esc_url( wp_login_url( home_url( '/' ) ) );
 		$year      = gmdate( 'Y' );
+		// Check if public submissions are enabled for the register option
+		$_gh_pub_cfg     = Portal_Data::read_config()['publicSubmissions'] ?? array();
+		$_gh_pub_enabled = ! empty( $_gh_pub_cfg['enabled'] );
+		$register_url    = esc_url( add_query_arg( 'portal', '1', home_url( '/' ) ) );
 		header( 'Content-Type: text/html; charset=UTF-8' );
 		?>
 <!DOCTYPE html>
@@ -731,7 +881,8 @@ body{margin:0;padding:0;background:#f4f6f9}
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Centralised submission and multi-stage peer review for dissertations, capstone projects, research papers, publications and grant proposals at CityU.">
-<title>CityU Research Review Portal</title>
+<title><?php echo esc_html( RRP_Portal_Settings::get( 'portal_name' ) ?: 'CityU Research Review Portal' ); ?></title>
+<link rel="icon" href="<?php echo esc_url( RRP_PLUGIN_URL . 'assets/city-university-logo.svg' ); ?>" type="image/svg+xml">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
@@ -746,6 +897,8 @@ a{text-decoration:none;color:inherit}
 .t-nav a:hover{color:#fff}
 .t-login{background:#fff;color:#002f52!important;font-weight:700;border-radius:6px;padding:.4rem 1.15rem;transition:background .18s!important;white-space:nowrap}
 .t-login:hover{background:#dbeeff!important}
+.t-register{background:#0074c2!important;color:#fff!important;border:2px solid rgba(255,255,255,.35);margin-left:.3rem}
+.t-register:hover{background:#005fa3!important}
 
 /* ── Hero ── */
 .hero{background:linear-gradient(140deg,#002f52 0%,#00509e 55%,#0074c2 100%);color:#fff;padding:5rem 2rem 4.5rem;text-align:center}
@@ -756,6 +909,8 @@ a{text-decoration:none;color:inherit}
 .hero p{font-size:1.08rem;color:rgba(255,255,255,.86);max-width:560px;margin:0 auto 2.1rem;line-height:1.72}
 .btn-cta{display:inline-block;background:#fff;color:#002f52;font-weight:800;font-size:.97rem;border-radius:8px;padding:.75rem 2rem;box-shadow:0 4px 18px rgba(0,0,0,.18);transition:background .18s,transform .14s}
 .btn-cta:hover{background:#dbeeff;transform:translateY(-2px)}
+.btn-cta-outline{background:rgba(255,255,255,.13);color:#fff!important;border:2px solid rgba(255,255,255,.55);box-shadow:none}
+.btn-cta-outline:hover{background:rgba(255,255,255,.22);transform:translateY(-2px)}
 
 /* ── Shared section layout ── */
 .section{padding:3.5rem 2rem}
@@ -838,6 +993,9 @@ a{text-decoration:none;color:inherit}
     <a href="#about" class="t-hide">About</a>
     <a href="#process" class="t-hide">Submission Types</a>
     <a href="<?php echo $login_url; ?>" class="t-login">Login</a>
+    <?php if ( $_gh_pub_enabled ) : ?>
+    <a href="<?php echo $register_url; ?>" class="t-login t-register t-hide">Register to Submit</a>
+    <?php endif; ?>
   </nav>
 </header>
 
@@ -847,6 +1005,11 @@ a{text-decoration:none;color:inherit}
     <h1>Streamlined Research<br><em>Submission &amp; Review</em></h1>
     <p>The CityU Research Review Portal is a centralised platform for submitting and tracking doctoral dissertations, capstone projects, research papers, publications, and grant proposals through structured multi-stage expert review.</p>
     <a href="<?php echo $login_url; ?>" class="btn-cta">Login to Submit Your Work &rarr;</a>
+    <?php if ( $_gh_pub_enabled ) : ?>
+    <div style="margin-top:.9rem;">
+      <a href="<?php echo $register_url; ?>" class="btn-cta btn-cta-outline">No CityU account? Register to Submit &rarr;</a>
+    </div>
+    <?php endif; ?>
   </div>
 </section>
 
@@ -1001,11 +1164,16 @@ a{text-decoration:none;color:inherit}
   <h2>Ready to submit your research?</h2>
   <p>Log in with your CityU credentials to access your personal dashboard and begin a new submission.</p>
   <a href="<?php echo $login_url; ?>" class="btn-cta">Login Now &rarr;</a>
+  <?php if ( $_gh_pub_enabled ) : ?>
+  <div style="margin-top:1.25rem;font-size:.9rem;color:rgba(255,255,255,.7);">- or -</div>
+  <p style="margin-top:.75rem;color:rgba(255,255,255,.8);font-size:.92rem;">No CityU account? Public submissions are open.</p>
+  <a href="<?php echo $register_url; ?>" class="btn-cta" style="background:#0074c2;color:#fff;margin-top:.5rem;border:2px solid rgba(255,255,255,.45);">Register &amp; Submit &rarr;</a>
+  <?php endif; ?>
 </section>
 
 <footer class="site-footer">
   <p>&copy; <?php echo esc_html( $year ); ?> City University of Seattle &middot; Research Review Portal &middot; School of Technology and Computing (STC)</p>
-  <p style="margin-top:.35rem;font-size:.76rem;color:#4b5563;">Designed &amp; developed by <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#60a5fa;text-decoration:none;">Kiran Kumar Vejendla</a> &middot; <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#60a5fa;text-decoration:none;">vejendlakirankumar@cityu.edu</a></p>
+  <p style="margin-top:.35rem;font-size:.76rem;color:#4b5563;">Designed &amp; developed by <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#60a5fa;text-decoration:none;">Kiran Kumar Vejendla</a> &middot; <a href="mailto:vejendlakirankumar@cityu.edu" style="color:#60a5fa;text-decoration:none;">vejendlakirankumar@cityu.edu</a> and <a href="mailto:garrisjemell@cityu.edu" style="color:#60a5fa;text-decoration:none;">Jemell Garris</a> &middot; <a href="mailto:garrisjemell@cityu.edu" style="color:#60a5fa;text-decoration:none;">garrisjemell@cityu.edu</a></p>
 </footer>
 
 <script>
@@ -1034,6 +1202,89 @@ a{text-decoration:none;color:inherit}
 	add_action( 'init', array( 'Research_Review_Portal', 'init' ) );
 	add_action( 'rest_api_init', array( 'Portal_REST', 'register_routes' ) );
 
+	// ── Dynamic-analysis security hardening hooks ─────────────────────────────
+
+	// D-Headers: Add security headers to every WordPress response.
+	add_action( 'send_headers', function () {
+		header( 'X-Content-Type-Options: nosniff' );
+		header( 'X-Frame-Options: SAMEORIGIN' );
+		header( 'Referrer-Policy: strict-origin-when-cross-origin' );
+		header( 'Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=()' );
+		// Content-Security-Policy: allow our own origin + the Mammoth CDN script only.
+		header( "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://secure.gravatar.com; connect-src 'self'; frame-ancestors 'none';" );
+		// Remove PHP version exposure.
+		header( 'X-Powered-By:' );
+	}, 1 );
+
+	// D-CORS: Override WordPress REST API's default of reflecting any Origin
+	// back with Allow-Credentials:true (OWASP A05 – Security Misconfiguration).
+	// Priority 100 ensures this runs AFTER WP core's send_cors_headers (priority 10).
+	// Only the same host (and optionally RRP_CORS_ORIGIN) is allowed.
+	add_filter( 'rest_pre_serve_request', function ( $served, $result, $request ) {
+		// Remove all CORS headers set by WordPress core before we set our own.
+		header_remove( 'Access-Control-Allow-Origin' );
+		header_remove( 'Access-Control-Allow-Credentials' );
+		header_remove( 'Access-Control-Expose-Headers' );
+		header_remove( 'Access-Control-Allow-Headers' );
+		header_remove( 'Access-Control-Allow-Methods' );
+		$request_origin = isset( $_SERVER['HTTP_ORIGIN'] ) ? (string) $_SERVER['HTTP_ORIGIN'] : '';
+		if ( $request_origin ) {
+			$site_host = wp_parse_url( home_url(), PHP_URL_HOST );
+			$req_host  = wp_parse_url( $request_origin, PHP_URL_HOST );
+			$explicit  = defined( 'RRP_CORS_ORIGIN' ) ? (string) RRP_CORS_ORIGIN : '';
+			if ( $site_host && $req_host && strtolower( $site_host ) === strtolower( $req_host ) ) {
+				header( 'Access-Control-Allow-Origin: ' . esc_url_raw( $request_origin ) );
+				header( 'Access-Control-Allow-Credentials: true' );
+				header( 'Access-Control-Allow-Methods: OPTIONS, GET, POST, PUT, PATCH, DELETE' );
+				header( 'Access-Control-Allow-Headers: Authorization, X-WP-Nonce, Content-Type, Content-Disposition' );
+				header( 'Access-Control-Expose-Headers: X-WP-Total, X-WP-TotalPages' );
+			} elseif ( $explicit && $request_origin === $explicit ) {
+				// Explicitly configured trusted third-party origin (no credentials).
+				header( 'Access-Control-Allow-Origin: ' . esc_url_raw( $request_origin ) );
+				header( 'Access-Control-Allow-Methods: OPTIONS, GET, POST' );
+				header( 'Access-Control-Allow-Headers: Authorization, X-WP-Nonce, Content-Type' );
+			}
+			// Any other origin gets no CORS headers — the browser will block it.
+			header( 'Vary: Origin' );
+		}
+		return $served;
+	}, 100, 3 ); // Priority 100: must run AFTER WP core's send_cors_headers (priority 10)
+
+	// D-XMLRPC: Disable XML-RPC entirely — it is not used by the portal and
+	// system.multicall enables large-scale credential brute-forcing.
+	// Belt-and-suspenders: three layers to block all XML-RPC paths, including
+	// IXR built-ins (system.listMethods, system.multicall) that bypass the
+	// xmlrpc_enabled filter.
+	add_filter( 'xmlrpc_enabled', '__return_false' );
+	// Layer 2: kill the request at init before wp_xmlrpc_server is instantiated.
+	add_action( 'init', function () {
+		if ( isset( $_SERVER['SCRIPT_FILENAME'] ) &&
+			'xmlrpc.php' === basename( (string) $_SERVER['SCRIPT_FILENAME'] ) ) {
+			status_header( 403 );
+			die( 'XML-RPC services are disabled on this server.' );
+		}
+	}, 1 );
+	// Remove the XML-RPC link advertised in page <head>.
+	remove_action( 'wp_head', 'rsd_link' );
+	remove_action( 'wp_head', 'wlwmanifest_link' );
+
+	// D-UserEnum-REST: Require authentication to list WP users via REST API.
+	add_filter( 'rest_endpoints', function ( $endpoints ) {
+		if ( ! is_user_logged_in() ) {
+			unset( $endpoints['/wp/v2/users'] );
+			unset( $endpoints['/wp/v2/users/(?P<id>[\d]+)'] );
+		}
+		return $endpoints;
+	} );
+
+	// D-UserEnum-Author: Block ?author=N username enumeration via redirect.
+	add_action( 'template_redirect', function () {
+		if ( isset( $_GET['author'] ) && ! current_user_can( 'list_users' ) ) {
+			wp_safe_redirect( home_url( '/' ), 301 );
+			exit;
+		}
+	}, 1 );
+
 	// ── URL host fix ─────────────────────────────────────────────────────────
 	// Must be registered at plugin-load time, NOT inside 'init', so these fire
 	// before WordPress reads options and before redirect_canonical runs.
@@ -1048,7 +1299,19 @@ a{text-decoration:none;color:inherit}
 	add_action( 'rrp_daily_report',       array( 'Portal_REST', 'scheduled_report' ) );
 	add_action( 'rrp_deadline_reminders', array( 'Portal_REST', 'send_deadline_reminders' ) );
 	add_action( 'rrp_escalation_check',   array( 'Portal_REST', 'send_escalation_emails' ) );
+	add_action( 'rrp_auto_backup',        array( 'Portal_REST', 'run_auto_backup' ) );
 	add_action( 'phpmailer_init',         array( 'Portal_REST', 'configure_phpmailer' ) );
+
+	// Register a custom weekly recurrence for auto-backup.
+	add_filter( 'cron_schedules', function ( $schedules ) {
+		if ( ! isset( $schedules['rrp_weekly'] ) ) {
+			$schedules['rrp_weekly'] = array(
+				'interval' => 7 * DAY_IN_SECONDS,
+				'display'  => 'Once Weekly (RRP)',
+			);
+		}
+		return $schedules;
+	} );
 
 	register_activation_hook( __FILE__, function() {
 		if ( ! wp_next_scheduled( 'rrp_daily_report' ) ) {
@@ -1066,6 +1329,7 @@ a{text-decoration:none;color:inherit}
 		wp_clear_scheduled_hook( 'rrp_daily_report' );
 		wp_clear_scheduled_hook( 'rrp_deadline_reminders' );
 		wp_clear_scheduled_hook( 'rrp_escalation_check' );
+		wp_clear_scheduled_hook( 'rrp_auto_backup' );
 	} );
 
 	// Auto-schedule new cron jobs on every load if not already registered
@@ -1076,5 +1340,19 @@ a{text-decoration:none;color:inherit}
 		}
 		if ( ! wp_next_scheduled( 'rrp_escalation_check' ) ) {
 			wp_schedule_event( time(), 'daily', 'rrp_escalation_check' );
+		}
+		// Auto backup: schedule/reschedule/deschedule based on live settings.
+		if ( class_exists( 'RRP_Portal_Settings' ) ) {
+			$ab_on   = (bool) RRP_Portal_Settings::get( 'auto_backup_enabled' );
+			$ab_freq = RRP_Portal_Settings::get( 'auto_backup_schedule' ) === 'weekly' ? 'rrp_weekly' : 'daily';
+			$next    = wp_next_scheduled( 'rrp_auto_backup' );
+			if ( $ab_on ) {
+				if ( ! $next || wp_get_schedule( 'rrp_auto_backup' ) !== $ab_freq ) {
+					wp_clear_scheduled_hook( 'rrp_auto_backup' );
+					wp_schedule_event( time(), $ab_freq, 'rrp_auto_backup' );
+				}
+			} elseif ( $next ) {
+				wp_clear_scheduled_hook( 'rrp_auto_backup' );
+			}
 		}
 	} );

@@ -39,6 +39,9 @@ class RRP_Portal_Settings {
 	const ENCRYPTED_FIELDS = array(
 		'entra_client_secret',
 		'smtp_password',
+		'azure_blob_sas_url',   // Container SAS URL — contains auth token
+		'turnitin_api_key',      // Turnitin v3 integration key
+		'ithenticate_api_key',   // iThenticate v2 API key
 	);
 
 	/** Default values for every known setting. */
@@ -69,6 +72,19 @@ class RRP_Portal_Settings {
 		'smtp_password'   => '',      // encrypted at rest (already in ENCRYPTED_FIELDS)
 		'smtp_from_name'  => '',
 		'smtp_from_email' => '',
+
+		// ── Auto Backup / Azure Blob ────────────────────────────────────────────
+		'azure_blob_sas_url'   => '',    // Container SAS URL — encrypted at rest
+		'auto_backup_enabled'  => false,
+		'auto_backup_schedule' => 'daily', // 'daily' | 'weekly'
+
+		// ── Plagiarism / Similarity check ───────────────────────────────────────
+		'plagiarism_provider'  => 'simulate', // 'simulate' | 'core' | 'turnitin' | 'ithenticate' | 'none'
+		'plagiarism_api_key'   => '',         // CORE API key
+		'turnitin_api_url'     => 'https://api.turnitin.com', // Turnitin v3 base URL (region-configurable)
+		'turnitin_api_key'     => '',         // Turnitin v3 integration key (encrypted at rest)
+		'ithenticate_api_url'  => 'https://app.ithenticate.com', // iThenticate v2 base URL
+		'ithenticate_api_key'  => '',         // iThenticate v2 API key (encrypted at rest)
 	);
 
 	// Runtime cache — cleared whenever settings are written.
@@ -167,8 +183,20 @@ class RRP_Portal_Settings {
 						break;
 					case 'smtp_port':
 						$current[ $key ] = absint( $value );
-						break;
-					default:
+						break;				case 'auto_backup_enabled':
+					$current[ $key ] = (bool) $value;
+					break;
+				case 'auto_backup_schedule':
+					$current[ $key ] = in_array( $value, array( 'daily', 'weekly' ), true ) ? $value : 'daily';
+					break;
+				case 'plagiarism_provider':
+					$current[ $key ] = in_array( $value, array( 'simulate', 'core', 'turnitin', 'ithenticate', 'none' ), true ) ? $value : 'simulate';
+					break;
+				case 'turnitin_api_url':
+				case 'ithenticate_api_url':
+					$current[ $key ] = esc_url_raw( (string) $value );
+					break;
+				default:
 						$current[ $key ] = sanitize_text_field( (string) $value );
 				}
 			}
@@ -227,8 +255,9 @@ class RRP_Portal_Settings {
 	 */
 	public static function aes_encrypt( $plaintext ) {
 		if ( ! function_exists( 'openssl_encrypt' ) ) {
-			// Fallback for environments without OpenSSL (should not happen on PHP 8.1)
-			return base64_encode( 'NOSSL:' . $plaintext );
+			// OpenSSL is required — never store sensitive settings as plaintext.
+			error_log( '[RRP] CRITICAL: openssl_encrypt unavailable. Cannot encrypt sensitive setting.' );
+			return false;
 		}
 		$key = self::derive_key();
 		if ( ! $key ) {
@@ -259,12 +288,6 @@ class RRP_Portal_Settings {
 	 * @return string|false    Plain text, or false on failure / authentication error.
 	 */
 	public static function aes_decrypt( $encoded ) {
-		// Compatibility: values stored by older fallback path
-		$raw_check = base64_decode( $encoded, true );
-		if ( false !== $raw_check && 0 === strpos( $raw_check, 'NOSSL:' ) ) {
-			return substr( $raw_check, 6 );
-		}
-
 		if ( ! function_exists( 'openssl_decrypt' ) ) {
 			return false;
 		}

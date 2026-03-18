@@ -54,8 +54,16 @@
   ];
   var _dynTypesLoaded = false;
 
+  // ── Upload constraints (populated from /config on boot) ───────────────────
+  var _uploadCfg = { maxFileSizeMb: 2, maxFiles: 5, allowedExtensions: ['pdf', 'docx'] };
+
   function _refreshDynTypes(callback) {
-    api('GET', '/submission-types').then(function (res) {
+    Promise.all([
+      api('GET', '/submission-types'),
+      api('GET', '/config').catch(function () { return {}; })
+    ]).then(function (results) {
+      var res    = results[0];
+      var config = results[1] || {};
       if (res.submissionTypes && res.submissionTypes.length) {
         _dynTypes = res.submissionTypes;
         _dynTypesLoaded = true;
@@ -65,6 +73,13 @@
         // Backward-compat aliases
         TYPE_LABEL_MAP['student'] = TYPE_LABEL_MAP['student-project'] || 'Student Project';
         TYPE_LABEL_MAP['conference paper'] = TYPE_LABEL_MAP['conference'] || 'Conference Paper';
+      }
+      if (config.uploadSettings) {
+        var u = config.uploadSettings;
+        if (u.maxFileSizeMb  > 0)                   _uploadCfg.maxFileSizeMb  = u.maxFileSizeMb;
+        if (u.maxFiles       > 0)                   _uploadCfg.maxFiles       = u.maxFiles;
+        if (Array.isArray(u.allowedExtensions) && u.allowedExtensions.length)
+                                                    _uploadCfg.allowedExtensions = u.allowedExtensions.map(function (e) { return e.toLowerCase(); });
       }
       if (callback) callback();
     }).catch(function () { if (callback) callback(); });
@@ -117,8 +132,11 @@
     if (s === 'revision-submitted')                            return 'rrp-dec-revision';
     if (s === 'draft')                                         return 'rrp-dec-draft';
     if (s === 'submitted')                                     return 'rrp-dec-submitted';
+    if (s === 'appeal-pending' || s === 'appeal-under-review') return 'rrp-dec-revision';
+    if (s === 'full-paper-invited')                            return 'rrp-dec-inreview';
     if (s.indexOf('review') !== -1 || s.indexOf('in-progress') !== -1)
                                                                return 'rrp-dec-inreview';
+    if (s === 'withdrawn' || s === 'cancelled')                return 'rrp-dec-withdrawn';
     return 'rrp-dec-pending';
   }
 
@@ -176,6 +194,25 @@
       expertise:  (window.RRP && window.RRP.expertise)  || '',
       portalRole: (window.RRP && (Array.isArray(window.RRP.userRoles) ? window.RRP.userRoles.join(' · ') : window.RRP.userRole)) || ''
     };
+    var _notifPrefs = {};
+
+    // All pref definitions — label, key, roles that see it
+    var ALL_NOTIF_PREFS = [
+      { key: 'submission_received',      label: 'Confirmation when my submission is received',      roles: ['Student', 'Public', 'Faculty'] },
+      { key: 'stage_assigned',           label: 'When I\'m assigned to review a stage',             roles: ['Reviewer', 'Faculty', 'Coordinator', 'Admin'] },
+      { key: 'deadline_reminder',        label: 'Upcoming review deadline reminders',               roles: ['Reviewer', 'Faculty', 'Coordinator', 'Admin'] },
+      { key: 'escalation',               label: 'Overdue review escalation alerts',                 roles: ['Reviewer', 'Faculty', 'Coordinator', 'Admin'] },
+      { key: 'submission_status_changed',label: 'When my submission is cancelled or withdrawn',     roles: ['Student', 'Public', 'Faculty'] },
+      { key: 'extension_resolved',       label: 'When my extension request is approved or denied',  roles: ['Reviewer', 'Faculty'] },
+      { key: 'extension_requested',      label: 'When a reviewer requests a deadline extension',    roles: ['Coordinator', 'Admin'] },
+    ];
+
+    function getVisiblePrefs() {
+      var roles = (window.RRP && Array.isArray(window.RRP.userRoles)) ? window.RRP.userRoles : [window.RRP && window.RRP.userRole || ''];
+      return ALL_NOTIF_PREFS.filter(function (p) {
+        return p.roles.some(function (r) { return roles.indexOf(r) !== -1; });
+      });
+    }
 
     function render(programs, departments) {
       // Build degree/program dropdown
@@ -203,6 +240,28 @@
         });
       } else {
         if (_profile.department) deptOptions += '<option value="' + escapeHtml(_profile.department) + '" selected>' + escapeHtml(_profile.department) + '</option>';
+      }
+      // Build notification preferences checkboxes
+      var visiblePrefs = getVisiblePrefs();
+      var notifHtml = '';
+      if (visiblePrefs.length) {
+        notifHtml =
+          '<details id="rrp-notif-details" style="margin-top:1.25rem;" open>' +
+            '<summary style="cursor:pointer;font-size:.88rem;font-weight:600;color:#475569;user-select:none;">&#128276; Notification Preferences</summary>' +
+            '<div style="margin-top:.75rem;display:flex;flex-direction:column;gap:.55rem;" id="rrp-notif-prefs-list">' +
+              visiblePrefs.map(function (p) {
+                var checked = (_notifPrefs[p.key] === false) ? '' : ' checked'; // default = on
+                return '<label style="display:flex;align-items:center;gap:.5rem;font-size:.88rem;cursor:pointer;">' +
+                  '<input type="checkbox" data-notif-key="' + escapeHtml(p.key) + '"' + checked + ' style="width:15px;height:15px;cursor:pointer;">' +
+                  '<span>' + escapeHtml(p.label) + '</span>' +
+                  '</label>';
+              }).join('') +
+            '</div>' +
+            '<div style="margin-top:.75rem;display:flex;gap:.6rem;align-items:center;">' +
+              '<button type="button" class="rrp-btn secondary" id="rrp-notif-save" style="padding:.35rem .9rem;font-size:.85rem;">Save Preferences</button>' +
+              '<span id="rrp-notif-msg" style="font-size:.83rem;display:none;"></span>' +
+            '</div>' +
+          '</details>';
       }
       container.innerHTML =
         '<div class="rrp-dashboard">' +
@@ -236,12 +295,15 @@
               '<details style="margin-top:1rem;">' +
                 '<summary style="cursor:pointer;font-size:.88rem;font-weight:600;color:#475569;user-select:none;">Change Password</summary>' +
                 '<div style="margin-top:.75rem;display:flex;flex-direction:column;gap:.5rem;">' +
+                  '<label class="rrp-label">Current Password<br>' +
+                    '<input type="password" class="rrp-input" id="rrp-pf-current-pass" autocomplete="current-password" placeholder="Enter current password to change" /></label>' +
                   '<label class="rrp-label">New Password (min 8 characters)<br>' +
                     '<input type="password" class="rrp-input" id="rrp-pf-pass" autocomplete="new-password" placeholder="Leave blank to keep current" /></label>' +
                   '<label class="rrp-label">Confirm Password<br>' +
                     '<input type="password" class="rrp-input" id="rrp-pf-pass2" autocomplete="new-password" placeholder="Re-enter new password" /></label>' +
                 '</div>' +
               '</details>' +
+              notifHtml +
               '<div style="margin-top:1.25rem;display:flex;gap:.6rem;align-items:center;">' +
                 '<button type="submit" class="rrp-btn primary" id="rrp-pf-save">Save Changes</button>' +
                 '<button type="button" class="rrp-btn secondary" id="rrp-pf-cancel">Cancel</button>' +
@@ -254,13 +316,43 @@
       document.getElementById('rrp-profile-back').addEventListener('click', _backFn);
       document.getElementById('rrp-pf-cancel').addEventListener('click', _backFn);
 
+      // Notification preferences save button
+      var notifSaveBtn = document.getElementById('rrp-notif-save');
+      if (notifSaveBtn) {
+        notifSaveBtn.addEventListener('click', function () {
+          var notifMsg = document.getElementById('rrp-notif-msg');
+          var payload  = {};
+          document.querySelectorAll('[data-notif-key]').forEach(function (cb) {
+            payload[cb.getAttribute('data-notif-key')] = cb.checked;
+          });
+          notifSaveBtn.disabled = true;
+          notifSaveBtn.textContent = 'Saving\u2026';
+          if (notifMsg) notifMsg.style.display = 'none';
+          api('PUT', '/notif-prefs', payload).then(function (res) {
+            _notifPrefs = res.prefs || payload;
+            notifSaveBtn.disabled = false;
+            notifSaveBtn.textContent = 'Save Preferences';
+            if (notifMsg) { notifMsg.style.display = 'inline'; notifMsg.style.color = '#16a34a'; notifMsg.textContent = 'Preferences saved.'; }
+          }).catch(function () {
+            notifSaveBtn.disabled = false;
+            notifSaveBtn.textContent = 'Save Preferences';
+            if (notifMsg) { notifMsg.style.display = 'inline'; notifMsg.style.color = '#ef4444'; notifMsg.textContent = 'Save failed. Please try again.'; }
+          });
+        });
+      }
+
       document.getElementById('rrp-profile-form').addEventListener('submit', function (e) {
         e.preventDefault();
         var msgEl   = document.getElementById('rrp-pf-msg');
         var saveBtn = document.getElementById('rrp-pf-save');
-        var pass1   = document.getElementById('rrp-pf-pass').value;
-        var pass2   = document.getElementById('rrp-pf-pass2').value;
+        var pass1        = document.getElementById('rrp-pf-pass').value;
+        var pass2        = document.getElementById('rrp-pf-pass2').value;
+        var currentPass  = document.getElementById('rrp-pf-current-pass') ? document.getElementById('rrp-pf-current-pass').value : '';
 
+        if (pass1 && !currentPass) {
+          msgEl.style.display = 'inline'; msgEl.style.color = '#ef4444';
+          msgEl.textContent = 'Current password is required to set a new password.'; return;
+        }
         if (pass1 && pass1.length < 8) {
           msgEl.style.display = 'inline'; msgEl.style.color = '#ef4444';
           msgEl.textContent = 'Password must be at least 8 characters.'; return;
@@ -277,7 +369,7 @@
           department: document.getElementById('rrp-pf-dept').value.trim(),
           expertise:  document.getElementById('rrp-pf-expertise').value.trim()
         };
-        if (pass1) payload.password = pass1;
+        if (pass1) { payload.password = pass1; payload.currentPassword = currentPass; }
 
         saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
         msgEl.style.display = 'none';
@@ -303,6 +395,7 @@
           msgEl.style.display = 'inline'; msgEl.style.color = '#16a34a';
           msgEl.textContent   = 'Profile updated successfully.';
           // Clear password fields
+          document.getElementById('rrp-pf-current-pass').value = '';
           document.getElementById('rrp-pf-pass').value  = '';
           document.getElementById('rrp-pf-pass2').value = '';
         }).catch(function (err) {
@@ -314,13 +407,15 @@
       });
     }
 
-    // Fetch fresh profile data and config (for dropdowns) in parallel, then render
+    // Fetch fresh profile data, config (for dropdowns), and notif prefs in parallel, then render
     Promise.all([
       api('GET', '/portal-users/me').catch(function() { return {}; }),
-      api('GET', '/config').catch(function() { return {}; })
+      api('GET', '/config').catch(function() { return {}; }),
+      api('GET', '/notif-prefs').catch(function() { return {}; })
     ]).then(function(results) {
       var meRes  = results[0];
       var cfgRes = results[1];
+      var npRes  = results[2];
       var u = meRes.user || {};
       if (u.name)       _profile.name       = u.name;
       if (u.email)      _profile.email      = u.email;
@@ -329,6 +424,7 @@
       if (u.degree    !== undefined) _profile.degree     = u.degree     || '';
       if (u.department !== undefined) _profile.department = u.department || '';
       if (u.expertise !== undefined)  _profile.expertise  = u.expertise  || '';
+      _notifPrefs = (npRes && npRes.prefs) ? npRes.prefs : {};
       render(cfgRes.programs || [], cfgRes.departments || []);
     });
   }
@@ -360,13 +456,14 @@
             '<div class="rrp-profile-icon">&#128100;</div>' +
             '<div class="rrp-profile-name">' + escapeHtml(userName) + '</div>' +
             '<div class="rrp-profile-email">' + escapeHtml(userEmail) + '</div>' +
-            '<div class="rrp-profile-role">Student &middot; CityU STC</div>' +
+            '<div class="rrp-profile-role">' + ((window.RRP && window.RRP.userRoles && window.RRP.userRoles.indexOf('Public') !== -1) ? 'Public Submitter' : 'Student \xb7 CityU STC') + '</div>' +
             '<button type="button" class="rrp-btn secondary" id="rrp-edit-profile-btn" style="margin-top:0.75rem;width:100%;">&#9998; Edit Profile</button>' +
           '</div>' +
           '<div class="rrp-nav-card">' +
             '<div class="rrp-nav-card-title">Quick links</div>' +
             '<ul class="rrp-nav-list">' +
               '<li><button type="button" class="rrp-nav-link" data-view="public">&#127760; Public submissions</button></li>' +
+              '<li><button type="button" class="rrp-nav-link" data-view="calendar">&#128197; My Deadlines</button></li>' +
             '</ul>' +
           '</div>' +
         '</aside>' +
@@ -383,6 +480,7 @@
       btn.addEventListener('click', function () {
         var view = btn.getAttribute('data-view');
         if (view === 'public') renderPublic(container, function () { renderStudentDashboard(container); });
+        if (view === 'calendar') renderDeadlineCalendar(container, function () { renderStudentDashboard(container); });
       });
     });
 
@@ -481,6 +579,7 @@
               firstReviewer = _activeS.reviewers[0].name || _activeS.reviewers[0].email;
             }
           }
+          var _withdrawableStatuses = ['Submitted - Awaiting Review', 'Submitted', 'Under Initial Review', 'Administrative Review', 'Revision Required', 'Revision Submitted'];
           return '<li class="rrp-sub-item">' +
             '<div class="rrp-sub-item-header">' +
               '<strong>' + escapeHtml(s.title || 'Untitled') + '</strong>' +
@@ -495,6 +594,7 @@
             '<div class="rrp-sub-item-actions">' +
               '<button type="button" class="rrp-btn secondary" data-detail="' + escapeHtml(s.id) + '">View Details</button>' +
               '<button type="button" class="rrp-btn secondary rrp-btn-log" data-audit-log="' + escapeHtml(s.id) + '">&#128221; Log</button>' +
+              (_withdrawableStatuses.indexOf(s.status) !== -1 ? '<button type="button" class="rrp-btn secondary danger" data-withdraw="' + escapeHtml(s.id) + '" data-withdraw-title="' + escapeHtml(s.title || 'Untitled') + '">&#128683; Withdraw</button>' : '') +
             '</div>' +
             '</li>';
         }).join('') +
@@ -507,6 +607,24 @@
       });
       listEl.querySelectorAll('[data-audit-log]').forEach(function (btn) {
         btn.addEventListener('click', function () { openAuditLogModal(btn.getAttribute('data-audit-log')); });
+      });
+      listEl.querySelectorAll('[data-withdraw]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var id    = btn.getAttribute('data-withdraw');
+          var title = btn.getAttribute('data-withdraw-title');
+          if (!confirm('Withdraw "' + title + '"?\n\nThis will permanently remove the submission from the review process and cannot be undone.')) return;
+          btn.disabled = true;
+          btn.textContent = 'Withdrawing\u2026';
+          api('PATCH', '/submissions/' + encodeURIComponent(id), { status: 'Withdrawn' })
+            .then(function () {
+              renderStudentDashboard(container, activeFilter);
+            })
+            .catch(function (err) {
+              btn.disabled = false;
+              btn.textContent = '\u{1F6AB} Withdraw';
+              alert('Withdrawal failed: ' + ((err.data && err.data.error) || 'Please try again.'));
+            });
+        });
       });
       listEl.querySelectorAll('[data-daterange]').forEach(function (btn) {
         btn.addEventListener('click', function () { activeDateRange = btn.getAttribute('data-daterange'); renderSubmissionList(mine, filter, activeDateRange); });
@@ -539,6 +657,11 @@
             typeOptions +
           '</select>' +
         '</div>' +
+        '<div id="rrp-twophase-notice" class="rrp-blind-banner" style="display:none;">' +
+          '&#128196; <strong>Two-Phase Submission:</strong> This type uses a two-phase review process. ' +
+          'You are submitting your <strong>abstract</strong> for initial review. ' +
+          'If your abstract is approved, you will be invited to submit your full paper.' +
+        '</div>' +
         '<div class="rrp-form-block">' +
           '<label>Title * <span class="rrp-hint">(max 200 characters)</span></label>' +
           '<input type="text" name="title" required maxlength="200">' +
@@ -561,6 +684,14 @@
 
     container.querySelector('[data-back]').addEventListener('click', function () { renderStudentDashboard(container); });
 
+    // Two-phase notice on type change
+    var typeSelect     = container.querySelector('[name="submissionType"]');
+    var twoPhaseNotice = document.getElementById('rrp-twophase-notice');
+    typeSelect.addEventListener('change', function () {
+      var t = dynTypeById(typeSelect.value);
+      twoPhaseNotice.style.display = (t && t.twoPhase) ? '' : 'none';
+    });
+
     var form = document.getElementById('rrp-submit-form');
 
     // Live title counter
@@ -577,11 +708,18 @@
     var fileListEl = document.getElementById('rrp-file-list');
     fileInput.addEventListener('change', function () {
       var files = Array.from(fileInput.files || []);
+      var maxMb = _uploadCfg.maxFileSizeMb;
       fileListEl.innerHTML = files.map(function (f) {
         var mb = (f.size / 1024 / 1024).toFixed(2);
-        var ok = f.size <= 2 * 1024 * 1024;
-        return '<div class="rrp-file-item' + (!ok ? ' rrp-file-item-warn' : '') + '">' +
-          escapeHtml(f.name) + ' (' + mb + ' MB)' + (!ok ? ' &#9888; exceeds 2 MB limit' : '') + '</div>';
+        var ext = f.name.split('.').pop().toLowerCase();
+        var typeOk = _uploadCfg.allowedExtensions.indexOf(ext) !== -1;
+        var sizeOk = f.size <= maxMb * 1024 * 1024;
+        var warn = (!typeOk || !sizeOk) ? ' rrp-file-item-warn' : '';
+        var msg = !typeOk
+          ? ' &#9888; only ' + _uploadCfg.allowedExtensions.join(', ').toUpperCase() + ' are accepted'
+          : (!sizeOk ? ' &#9888; exceeds ' + maxMb + ' MB limit' : '');
+        return '<div class="rrp-file-item' + warn + '">' +
+          escapeHtml(f.name) + ' (' + mb + ' MB)' + msg + '</div>';
       }).join('');
     });
 
@@ -632,6 +770,24 @@
         affiliation:    'City University of Seattle'
       };
 
+      var selectedFiles = Array.from(fileInput.files || []);
+      var badTypeFiles = selectedFiles.filter(function (f) {
+        return _uploadCfg.allowedExtensions.indexOf(f.name.split('.').pop().toLowerCase()) === -1;
+      });
+      var oversizeFiles = selectedFiles.filter(function (f) {
+        return f.size > _uploadCfg.maxFileSizeMb * 1024 * 1024;
+      });
+      if (badTypeFiles.length) {
+        errEl.innerHTML = '<div class="rrp-error">Only ' + _uploadCfg.allowedExtensions.join(', ').toUpperCase() + ' files are accepted. Remove: ' +
+          badTypeFiles.map(function (f) { return escapeHtml(f.name); }).join(', ') + '</div>';
+        return;
+      }
+      if (oversizeFiles.length) {
+        errEl.innerHTML = '<div class="rrp-error">Files must be ' + _uploadCfg.maxFileSizeMb + ' MB or smaller. Remove: ' +
+          oversizeFiles.map(function (f) { return escapeHtml(f.name); }).join(', ') + '</div>';
+        return;
+      }
+
       var submitBtn = document.getElementById('rrp-submit-btn');
       submitBtn.disabled = true;
       submitBtn.textContent = 'Submitting\u2026';
@@ -647,11 +803,18 @@
               credentials: 'same-origin',
               headers: { 'X-WP-Nonce': nonce },
               body: fileData
-            }).then(function () { return res; });
+            }).then(function (resp) {
+              if (!resp.ok) {
+                return resp.json().then(function (d) { throw { data: d }; });
+              }
+              return res;
+            });
           }
           return res;
         })
         .then(function (res) {
+          // F17: Remove draft from storage on successful submit.
+          try { localStorage.removeItem(draftKey); } catch (e) {}
           container.innerHTML =
             '<div class="rrp-student-success">' +
               '<div class="rrp-success-icon">&#10003;</div>' +
@@ -738,8 +901,12 @@
             '<ul class="rrp-nav-list">' +
               '<li><button type="button" class="rrp-nav-link" data-view="analytics">&#128202; Analytics</button></li>' +
               '<li><button type="button" class="rrp-nav-link" data-view="overdue">&#128680; Overdue</button></li>' +
+              '<li><button type="button" class="rrp-nav-link" data-view="inactive">&#128683; Inactive Submissions</button></li>' +
+              '<li><button type="button" class="rrp-nav-link" data-view="calendar">&#128197; Deadline Calendar</button></li>' +
               '<li><button type="button" class="rrp-nav-link" data-view="extensions">&#128197; Extension Requests</button></li>' +
+              '<li><button type="button" class="rrp-nav-link" data-view="appeals">&#9878; Appeal Queue</button></li>' +
               '<li><button type="button" class="rrp-nav-link" data-view="coi">&#9888;&#65039; COI Declarations</button></li>' +
+              '<li><button type="button" class="rrp-nav-link" data-view="announcements">&#128226; Announcements</button></li>' +
               '<li><button type="button" class="rrp-nav-link" data-view="public">&#127760; Public</button></li>' +
             '</ul>' +
           '</div>' +
@@ -749,11 +916,19 @@
               '<li><button type="button" class="rrp-nav-link" data-view="portal-settings">&#9881; Portal Settings</button></li>' +
             '</ul>' +
           '</div>' +
+          (_viewerIsAdmin ?
+            '<div class="rrp-nav-card">' +
+              '<div class="rrp-nav-card-title">Administration</div>' +
+              '<ul class="rrp-nav-list">' +
+                '<li><button type="button" class="rrp-nav-link" data-view="administration">&#128230; Backup &amp; Restore</button></li>' +
+                '<li><button type="button" class="rrp-nav-link" data-view="archive">&#128196; Data Archive</button></li>' +
+                '<li><button type="button" class="rrp-nav-link" data-view="roles">&#127775; Role Management</button></li>' +
+                '<li><button type="button" class="rrp-nav-link" data-view="webhooks">&#9889; Webhooks</button></li>' +
+              '</ul>' +
+            '</div>' : '') +
           '<div id="rrp-coord-reviewer-pool"></div>' +
         '</aside>' +
-      '</div>' +
-      // Inline assignment panel (hidden until triggered)
-      '<div id="rrp-coord-assign-panel" style="display:none;" class="rrp-assign-panel"></div>';
+      '</div>';
 
     // Quick-nav links
     container.querySelectorAll('[data-view]').forEach(function (btn) {
@@ -762,6 +937,8 @@
         if (view === 'analytics') renderAnalytics(container, function () { renderCoordinatorDashboard(container); });
         if (view === 'public')    renderPublic(container,    function () { renderCoordinatorDashboard(container); });
         if (view === 'overdue')   renderOverdue(container);
+        if (view === 'inactive')  renderInactiveSubmissions(container, function () { renderCoordinatorDashboard(container); });
+        if (view === 'calendar')  renderDeadlineCalendar(container, function () { renderCoordinatorDashboard(container); });
         if (view === 'extensions') renderExtensionRequests(container, function () { renderCoordinatorDashboard(container); });
         if (view === 'students')  renderStudentManagement(container,  function () { renderCoordinatorDashboard(container); });
         if (view === 'reviewers') renderReviewerManagement(container, function () { renderCoordinatorDashboard(container); });
@@ -773,7 +950,13 @@
         if (view === 'workflow-stages')    renderWorkflowStagesPanel(container,   function () { renderCoordinatorDashboard(container); });
         if (view === 'submission-types')   renderSubmissionTypesPanel(container,  function () { renderCoordinatorDashboard(container); });
         if (view === 'portal-settings')    renderPortalSettings(container,        function () { renderCoordinatorDashboard(container); });
+        if (view === 'appeals')         renderAppealQueue(container,           function () { renderCoordinatorDashboard(container); });
         if (view === 'coi')                renderCOIPanel(container,              function () { renderCoordinatorDashboard(container); });
+        if (view === 'announcements')      renderAnnouncementsBroadcast(container, function () { renderCoordinatorDashboard(container); });
+        if (view === 'administration')     renderAdminPanel(container,            function () { renderCoordinatorDashboard(container); });
+        if (view === 'archive')            renderAdminPanel(container,            function () { renderCoordinatorDashboard(container); }, 'archive');
+        if (view === 'roles')              renderAdminPanel(container,            function () { renderCoordinatorDashboard(container); }, 'roles');
+        if (view === 'webhooks')           renderWebhooks(container,              function () { renderCoordinatorDashboard(container); });
       });
     });
 
@@ -915,6 +1098,7 @@
           var sum = summary[s.id];
           var hasAssignment = sum && (sum.reviewStages || []).some(function (rs) { return (rs.reviewers || []).length > 0; });
           var isFinal = isApprovedStatus(s.status) || (s.status || '').toLowerCase() === 'rejected';
+          var isLocked = s.status === 'Withdrawn' || s.status === 'Cancelled';
           var firstReviewer = '';
           var currentStage  = '';
           if (!isFinal && sum && (sum.reviewStages || []).length) {
@@ -936,6 +1120,8 @@
               '<span><span class="rrp-meta-lbl">Category</span>' + escapeHtml(typeLabel(s.submissionType || s.type)) + '</span>' +
               '<span><span class="rrp-meta-lbl">Submitted by</span>' + escapeHtml(s.submitterName || s.submitterEmail || '\u2014') + '</span>' +
               (s.createdAt ? '<span><span class="rrp-meta-lbl">Date</span>' + new Date(s.createdAt).toLocaleDateString() + '</span>' : '') +
+              (s.phase ? '<span><span class="rrp-meta-lbl">Phase</span><span class="rrp-phase-badge phase-' + s.phase + '">' + (s.phase === 2 ? 'Full Paper' : 'Abstract') + '</span></span>' : '') +
+              (s.appeal && (s.appeal.status === 'pending' || s.appeal.status === 'under_review') ? '<span class="rrp-decision-badge rrp-dec-revision" style="font-size:.72rem;">&#9878; Appeal</span>' : '') +
             '</div>' +
             (isFinal
               ? '<div class="rrp-sub-item-review-info"><span class="rrp-review-complete">&#10003; Workflow complete</span></div>'
@@ -949,9 +1135,10 @@
                   : '')) +
             '<div class="rrp-sub-item-actions">' +
               '<button type="button" class="rrp-btn secondary" data-detail="' + escapeHtml(s.id) + '">View</button>' +
-              '<button type="button" class="rrp-btn' + (hasAssignment ? ' secondary' : '') + '" data-assign="' + escapeHtml(s.id) + '">' +
-                (hasAssignment ? '&#9998; Edit Assignment' : '&#43; Assign Reviewers') +
-              '</button>' +
+              (!isLocked ?
+                '<button type="button" class="rrp-btn' + (hasAssignment ? ' secondary' : '') + '" data-assign="' + escapeHtml(s.id) + '">' +
+                  (hasAssignment ? '&#9998; Edit Assignment' : '&#43; Assign Reviewers') +
+                '</button>' : '') +
               '<button type="button" class="rrp-btn secondary rrp-btn-log" data-audit-log="' + escapeHtml(s.id) + '">&#128221; Log</button>' +
             '</div>' +
           '</li>';
@@ -970,7 +1157,7 @@
         btn.addEventListener('click', function () {
           var subId = btn.getAttribute('data-assign');
           var sub   = all.find(function (s) { return s.id === subId; });
-          openAssignPanel(sub, summary[subId]);
+          openAssignPanel(sub, summary[subId], btn.closest('li'));
         });
       });
       listEl.querySelectorAll('[data-daterange]').forEach(function (btn) {
@@ -978,16 +1165,38 @@
       });
     }
 
-    function openAssignPanel(sub, summaryEntry) {
-      var panel = document.getElementById('rrp-coord-assign-panel');
-      panel.style.display = '';
-      panel.innerHTML = '<p class="rrp-loading">Loading reviewers&hellip;</p>';
-      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    function openAssignPanel(sub, summaryEntry, anchorLi) {
+      // Remove any existing inline assignment panel first; toggle if same submission
+      var existing = document.querySelector('.rrp-assign-panel-inline');
+      if (existing) {
+        var wasFor = existing.getAttribute('data-assign-for');
+        existing.parentNode.removeChild(existing);
+        if (wasFor === sub.id) return; // toggle off
+      }
 
-      api('GET', '/reviewers')
-        .then(function (res) {
+      var panel = document.createElement('div');
+      panel.className = 'rrp-assign-panel rrp-assign-panel-inline';
+      panel.setAttribute('data-assign-for', sub.id);
+      panel.innerHTML = '<p class="rrp-loading">Loading reviewers&hellip;</p>';
+
+      if (anchorLi && anchorLi.parentNode) {
+        anchorLi.parentNode.insertBefore(panel, anchorLi.nextSibling);
+      } else {
+        container.appendChild(panel);
+      }
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      Promise.all([ api('GET', '/reviewers'), api('GET', '/workflow-stages') ])
+        .then(function (results) {
+          var res       = results[0];
+          var wsRes     = results[1];
           var reviewers = res.reviewers || [];
           var stages    = stagesForSub(sub);
+          // Build single-user lookup by stage name
+          var singleUserMap = {};
+          (wsRes.workflowStages || []).forEach(function (ws) {
+            if (ws.singleUser) singleUserMap[ws.name] = true;
+          });
           var existing  = {};
           ((summaryEntry && summaryEntry.reviewStages) || []).forEach(function (rs) {
             existing[rs.stageName] = (rs.reviewers || []).map(function (r) { return r.email; });
@@ -1007,8 +1216,11 @@
               '<div id="rrp-assign-stages">' +
                 stages.map(function (stageName) {
                   var currentEmails = existing[stageName] || [];
-                  return '<div class="rrp-assign-stage" data-stage="' + escapeHtml(stageName) + '">' +
-                    '<h3 class="rrp-assign-stage-title">' + escapeHtml(stageName) + '</h3>' +
+                  var isSingle      = !!singleUserMap[stageName];
+                  return '<div class="rrp-assign-stage" data-stage="' + escapeHtml(stageName) + '" data-single="' + (isSingle ? '1' : '0') + '">' +
+                    '<h3 class="rrp-assign-stage-title">' + escapeHtml(stageName) +
+                      (isSingle ? ' <span style="font-size:.72rem;color:#78716c;font-weight:500;">(single user &mdash; max 1)</span>' : '') +
+                    '</h3>' +
                     '<div class="rrp-assign-reviewer-grid">' +
                     reviewers.map(function (r) {
                       var checked = currentEmails.indexOf(r.email) !== -1;
@@ -1029,44 +1241,57 @@
               '</div>' +
             '</div>';
 
-          // Toggle chip style on check
+          // Toggle chip style; enforce single-user limit per stage
           panel.querySelectorAll('.rrp-reviewer-chip input').forEach(function (cb) {
             cb.addEventListener('change', function () {
               cb.closest('.rrp-reviewer-chip').classList.toggle('rrp-reviewer-chip-checked', cb.checked);
+              // Enforce single-user: uncheck all others in this stage when one is selected
+              var stageEl = cb.closest('[data-stage]');
+              if (stageEl && stageEl.getAttribute('data-single') === '1' && cb.checked) {
+                stageEl.querySelectorAll('input[type=checkbox]').forEach(function (other) {
+                  if (other !== cb) {
+                    other.checked = false;
+                    other.closest('.rrp-reviewer-chip').classList.remove('rrp-reviewer-chip-checked');
+                  }
+                });
+              }
             });
           });
 
           document.getElementById('rrp-assign-cancel-btn').addEventListener('click', function () {
-            panel.style.display = 'none';
-            panel.innerHTML = '';
+            panel.parentNode && panel.parentNode.removeChild(panel);
           });
 
           document.getElementById('rrp-assign-save-btn').addEventListener('click', function () {
             var msgEl  = document.getElementById('rrp-assign-msg');
             var stageData = [];
+            var singleErr = [];
             panel.querySelectorAll('[data-stage]').forEach(function (stageEl) {
               var stageName = stageEl.getAttribute('data-stage');
+              var isSingle  = stageEl.getAttribute('data-single') === '1';
               var selected  = [];
               stageEl.querySelectorAll('input[type=checkbox]:checked').forEach(function (cb) {
                 selected.push({ id: cb.getAttribute('data-id'), name: cb.getAttribute('data-name'), email: cb.value });
               });
+              if (isSingle && selected.length > 1) singleErr.push(stageName);
               stageData.push({ stageName: stageName, reviewers: selected });
             });
-
+            if (singleErr.length) {
+              msgEl.innerHTML = '<span class="rrp-error">&#9888; Stage' + (singleErr.length > 1 ? 's' : '') +
+                ' <strong>' + singleErr.map(escapeHtml).join(', ') + '</strong> only allow one reviewer. Please deselect extras.</span>';
+              return;
+            }
             msgEl.innerHTML = '<span class="rrp-loading">Saving\u2026</span>';
             var saveBtn = document.getElementById('rrp-assign-save-btn');
             saveBtn.disabled = true;
-
             api('PATCH', '/submissions/' + encodeURIComponent(sub.id), { reviewStages: stageData })
               .then(function () {
                 msgEl.innerHTML = '<span class="rrp-success">Assignment saved.</span>';
-                // Notify reviewers if new ones were added
                 return api('POST', '/submissions/' + encodeURIComponent(sub.id) + '/skip-stage', { notifyOnly: true }).catch(function () {});
               })
               .then(function () {
                 setTimeout(function () {
-                  panel.style.display = 'none';
-                  panel.innerHTML = '';
+                  panel.parentNode && panel.parentNode.removeChild(panel);
                   renderCoordinatorDashboard(container, activeFilter);
                 }, 1200);
               })
@@ -1081,7 +1306,242 @@
         });
     }
 
+    // ── Announcements Broadcast ──────────────────────────────────────────────
+    function renderAnnouncementsBroadcast(container, backFn) {
+      api('GET', '/submission-types').then(function (tRes) {
+        var types = (tRes.submissionTypes || tRes || []);
+        container.innerHTML =
+          '<div class="rrp-mgmt-page-header">' +
+            '<button type="button" class="rrp-btn secondary" id="rrp-ann-back">&#8592; Back</button>' +
+            '<h1>&#128226; Announcements Broadcast</h1>' +
+          '</div>' +
+          '<div style="max-width:640px;">' +
+            '<p style="color:var(--rrp-text-muted);font-size:.9rem;margin-top:0;">Send a bulk email to all active submitters or assigned reviewers. Emails are sent via the configured mail transport.</p>' +
+            '<form id="rrp-ann-form" novalidate>' +
+
+            '<fieldset class="rrp-fieldset">' +
+              '<legend>Recipients</legend>' +
+              '<label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;">' +
+                '<input type="radio" name="ann-role" value="submitters" checked> Active submitters' +
+              '</label>' +
+              '<label style="display:flex;align-items:center;gap:.5rem;">' +
+                '<input type="radio" name="ann-role" value="reviewers"> Assigned reviewers' +
+              '</label>' +
+              '<div id="rrp-ann-sub-filters" style="margin-top:.75rem;">' +
+                '<label class="rrp-label" style="font-size:.85rem;">Filter by submission type <small style="font-weight:400;">(leave blank for all)</small></label>' +
+                '<div style="display:flex;flex-wrap:wrap;gap:.35rem .65rem;">' +
+                  types.map(function (t) {
+                    return '<label style="display:flex;align-items:center;gap:.3rem;font-size:.88rem;"><input type="checkbox" name="ann-type" value="' + escapeHtml(t.id || t) + '"> ' + escapeHtml(t.label || t.id || t) + '</label>';
+                  }).join('') +
+                '</div>' +
+              '</div>' +
+            '</fieldset>' +
+
+            '<fieldset class="rrp-fieldset" style="margin-top:1rem;">' +
+              '<legend>Message</legend>' +
+              '<label class="rrp-label">Subject *' +
+                '<input type="text" class="rrp-input" id="rrp-ann-subject" required maxlength="200" placeholder="e.g. Important update regarding your submission">' +
+              '</label>' +
+              '<label class="rrp-label" style="margin-top:.75rem;">Message *' +
+                '<textarea class="rrp-input" id="rrp-ann-message" rows="7" required style="resize:vertical;" placeholder="Write your announcement here\u2026"></textarea>' +
+              '</label>' +
+            '</fieldset>' +
+
+            '<div style="margin-top:1rem;display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;">' +
+              '<button type="submit" class="rrp-btn" id="rrp-ann-send-btn">&#128231; Send Announcement</button>' +
+              '<span id="rrp-ann-msg"></span>' +
+            '</div>' +
+            '</form>' +
+          '</div>';
+
+        document.getElementById('rrp-ann-back').addEventListener('click', function () {
+          if (backFn) backFn(); else renderCoordinatorDashboard(container);
+        });
+        // Toggle submitter filters when reviewer is selected
+        container.querySelectorAll('[name="ann-role"]').forEach(function (r) {
+          r.addEventListener('change', function () {
+            document.getElementById('rrp-ann-sub-filters').style.display = r.value === 'submitters' ? '' : 'none';
+          });
+        });
+        document.getElementById('rrp-ann-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var btn     = document.getElementById('rrp-ann-send-btn');
+          var msgEl   = document.getElementById('rrp-ann-msg');
+          var role    = container.querySelector('[name="ann-role"]:checked').value;
+          var subject = document.getElementById('rrp-ann-subject').value.trim();
+          var message = document.getElementById('rrp-ann-message').value.trim();
+          var types   = Array.from(container.querySelectorAll('[name="ann-type"]:checked')).map(function (cb) { return cb.value; });
+          if (!subject || !message) { msgEl.innerHTML = '<span class="rrp-error">Subject and message are required.</span>'; return; }
+          btn.disabled = true; btn.textContent = 'Sending\u2026';
+          msgEl.innerHTML = '';
+          api('POST', '/announcements', {
+            subject: subject,
+            message: message,
+            recipientFilter: { role: role, submissionTypes: types }
+          }).then(function (res) {
+            msgEl.innerHTML = '<span class="rrp-success">&#10003; Sent to ' + (res.sent || 0) + ' of ' + (res.total || 0) + ' recipients.</span>';
+            btn.disabled = false; btn.textContent = '&#128231; Send Announcement';
+          }).catch(function (err) {
+            msgEl.innerHTML = '<span class="rrp-error">' + escapeHtml((err && err.data && err.data.error) || 'Send failed.') + '</span>';
+            btn.disabled = false; btn.textContent = '&#128231; Send Announcement';
+          });
+        });
+      }).catch(function () {
+        container.innerHTML = '<div class="rrp-error">Unable to load announcements panel.</div>';
+      });
+    }
+
+    // ── Webhooks manager ─────────────────────────────────────────────────────
+    function renderWebhooks(container, backFn) {
+      var allowedEvents = ['submission.approved', 'submission.rejected', 'review.completed', 'submission.withdrawn'];
+      function load() {
+        api('GET', '/webhooks').then(function (res) {
+          var list = res.webhooks || [];
+          var bodyEl = document.getElementById('rrp-wh-list');
+          if (!bodyEl) return;
+          if (!list.length) {
+            bodyEl.innerHTML = '<p style="color:var(--rrp-text-muted);">No webhooks registered yet.</p>';
+            return;
+          }
+          bodyEl.innerHTML = '<table class="rrp-diff-table" style="width:100%;">' +
+            '<thead><tr><th>URL</th><th>Events</th><th>Created</th><th></th></tr></thead>' +
+            '<tbody>' +
+            list.map(function (wh) {
+              return '<tr>' +
+                '<td style="word-break:break-all;">' + escapeHtml(wh.url) + '</td>' +
+                '<td style="font-size:.78rem;">' + (wh.events || []).map(function (e) { return '<code>' + escapeHtml(e) + '</code>'; }).join('<br>') + '</td>' +
+                '<td style="font-size:.8rem;white-space:nowrap;">' + (wh.createdAt ? new Date(wh.createdAt).toLocaleDateString() : '—') + '</td>' +
+                '<td><button type="button" class="rrp-btn danger" style="padding:.25rem .6rem;font-size:.8rem;" data-wh-del="' + escapeHtml(wh.id) + '">&#10005;</button></td>' +
+              '</tr>';
+            }).join('') +
+            '</tbody></table>';
+          bodyEl.querySelectorAll('[data-wh-del]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              if (!confirm('Delete this webhook?')) return;
+              api('DELETE', '/webhooks/' + btn.getAttribute('data-wh-del')).then(load);
+            });
+          });
+        });
+      }
+
+      container.innerHTML =
+        '<div class="rrp-mgmt-page-header">' +
+          '<button type="button" class="rrp-btn secondary" id="rrp-wh-back">&#8592; Back</button>' +
+          '<h1>&#9889; Webhooks</h1>' +
+        '</div>' +
+        '<div style="max-width:700px;">' +
+          '<p style="color:var(--rrp-text-muted);font-size:.9rem;margin-top:0;">Receive HMAC-signed HTTP POST notifications on key events. Each delivery includes <code>X-RRP-Event</code> and <code>X-RRP-Signature</code> headers.</p>' +
+          '<div id="rrp-wh-list"><p class="rrp-loading">Loading\u2026</p></div>' +
+          '<hr style="margin:1.25rem 0;">' +
+          '<h3 style="margin-top:0;">Register Webhook</h3>' +
+          '<form id="rrp-wh-form" novalidate>' +
+            '<label class="rrp-label">Endpoint URL *' +
+              '<input type="url" class="rrp-input" id="rrp-wh-url" required placeholder="https://your-server.example.com/hook" maxlength="512">' +
+            '</label>' +
+            '<label class="rrp-label" style="margin-top:.75rem;">Signing Secret <small style="font-weight:400;">(optional — used for HMAC verification)</small>' +
+              '<input type="text" class="rrp-input" id="rrp-wh-secret" maxlength="128" placeholder="Leave blank to skip signature">' +
+            '</label>' +
+            '<label class="rrp-label" style="margin-top:.75rem;">Events to subscribe <small style="font-weight:400;">(leave blank to subscribe to all)</small></label>' +
+            '<div style="display:flex;flex-wrap:wrap;gap:.4rem .75rem;margin-bottom:.75rem;">' +
+              allowedEvents.map(function (ev) {
+                return '<label style="display:flex;align-items:center;gap:.3rem;font-size:.88rem;"><input type="checkbox" name="wh-event" value="' + ev + '" checked> <code>' + escapeHtml(ev) + '</code></label>';
+              }).join('') +
+            '</div>' +
+            '<div style="display:flex;gap:.75rem;align-items:center;">' +
+              '<button type="submit" class="rrp-btn" id="rrp-wh-add-btn">&#10010; Register</button>' +
+              '<span id="rrp-wh-msg"></span>' +
+            '</div>' +
+          '</form>' +
+        '</div>';
+
+      document.getElementById('rrp-wh-back').addEventListener('click', function () {
+        if (backFn) backFn(); else renderCoordinatorDashboard(container);
+      });
+      load();
+      document.getElementById('rrp-wh-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var btn  = document.getElementById('rrp-wh-add-btn');
+        var msgEl = document.getElementById('rrp-wh-msg');
+        var url   = document.getElementById('rrp-wh-url').value.trim();
+        var secret = document.getElementById('rrp-wh-secret').value.trim();
+        var events = Array.from(container.querySelectorAll('[name="wh-event"]:checked')).map(function (cb) { return cb.value; });
+        if (!url) { msgEl.innerHTML = '<span class="rrp-error">URL is required.</span>'; return; }
+        btn.disabled = true;
+        msgEl.innerHTML = '';
+        api('POST', '/webhooks', { url: url, secret: secret, events: events }).then(function () {
+          document.getElementById('rrp-wh-url').value = '';
+          document.getElementById('rrp-wh-secret').value = '';
+          msgEl.innerHTML = '<span class="rrp-success">&#10003; Webhook registered.</span>';
+          btn.disabled = false;
+          load();
+        }).catch(function (err) {
+          msgEl.innerHTML = '<span class="rrp-error">' + escapeHtml((err && err.data && err.data.error) || 'Failed.') + '</span>';
+          btn.disabled = false;
+        });
+      });
+    }
+
     // ── Extension Requests panel (coordinator / admin) ────────────────────
+    // ── Appeal Queue ────────────────────────────────────────────────────────
+    function renderAppealQueue(container, backFn) {
+      container.innerHTML =
+        '<div class="rrp-mgmt-page-header">' +
+          '<button type="button" class="rrp-btn secondary" id="rrp-ap-panel-back">&#8592; Back</button>' +
+          '<h1>&#9878; Appeal Queue</h1>' +
+        '</div>' +
+        '<div id="rrp-ap-panel-body"><p class="rrp-loading">Loading&hellip;</p></div>';
+
+      document.getElementById('rrp-ap-panel-back').addEventListener('click', function () {
+        if (backFn) backFn(); else renderCoordinatorDashboard(container);
+      });
+
+      api('GET', '/appeals').then(function (res) {
+        var list = res.appeals || [];
+        var el   = document.getElementById('rrp-ap-panel-body');
+        if (!el) return;
+        if (!list.length) {
+          el.innerHTML = '<p style="color:var(--rrp-text-muted);">No appeals on record.</p>';
+          return;
+        }
+        var statusLabel = { pending: 'Pending', under_review: 'Under Review', upheld: 'Upheld', overturned: 'Overturned' };
+        var statusCls   = { pending: 'rrp-dec-revision', under_review: 'rrp-dec-inreview', upheld: 'rrp-dec-rejected', overturned: 'rrp-dec-approved' };
+        var html = '<ul class="rrp-list">';
+        list.forEach(function (item) {
+          var ap = item.appeal;
+          var cls = statusCls[ap.status] || 'rrp-dec-pending';
+          var lbl = statusLabel[ap.status] || ap.status;
+          html += '<li class="rrp-sub-item">' +
+            '<div class="rrp-sub-item-header">' +
+              '<strong>' + escapeHtml(item.title || item.submissionId) + '</strong>' +
+              '<span class="rrp-decision-badge ' + cls + '">' + escapeHtml(lbl) + '</span>' +
+            '</div>' +
+            '<div class="rrp-sub-item-meta">' +
+              '<span><span class="rrp-meta-lbl">ID</span>' + escapeHtml(item.submissionId) + '</span>' +
+              '<span><span class="rrp-meta-lbl">Type</span>' + escapeHtml(typeLabel(item.type)) + '</span>' +
+              '<span><span class="rrp-meta-lbl">By</span>' + escapeHtml(item.submitterName || '') + '</span>' +
+              (ap.submittedAt ? '<span><span class="rrp-meta-lbl">Filed</span>' + new Date(ap.submittedAt).toLocaleDateString() + '</span>' : '') +
+            '</div>' +
+            '<div style="margin:.3rem 0;font-size:.88rem;color:var(--rrp-text-muted);white-space:pre-wrap;">' + escapeHtml(ap.reason || '') + '</div>' +
+            '<div class="rrp-sub-item-actions">' +
+              '<button type="button" class="rrp-btn secondary" data-ap-view="' + escapeHtml(item.submissionId) + '">&#128065; Open Submission</button>' +
+            '</div>' +
+          '</li>';
+        });
+        html += '</ul>';
+        el.innerHTML = html;
+        el.querySelectorAll('[data-ap-view]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            renderSubmissionDetail(btn.getAttribute('data-ap-view'), container, function () {
+              renderAppealQueue(container, backFn);
+            });
+          });
+        });
+      }).catch(function () {
+        var el = document.getElementById('rrp-ap-panel-body');
+        if (el) el.innerHTML = '<div class="rrp-error">Unable to load appeals.</div>';
+      });
+    }
+
     function renderExtensionRequests(container, backFn) {
       container.innerHTML =
         '<div class="rrp-mgmt-page-header">' +
@@ -1285,6 +1745,7 @@
 
   function renderSelection(container) {
     if (!isLoggedIn) {
+      var _pubRegEnabled = !!(window.RRP && window.RRP.publicSubmissionsEnabled);
       container.innerHTML =
         '<div class="rrp-user-banner rrp-user-banner-guest">' +
           '<span>You are not logged in. Please <a href="' + escapeHtml(loginUrl) + '">log in</a> to submit and track your research.</span>' +
@@ -1292,8 +1753,20 @@
         '</div>' +
         '<h1>Research Submission Process</h1>' +
         '<p class="rrp-info">Select a submission type below to view the process details.</p>' +
-        '<p class="rrp-info">If you do not have an account, contact your administrator.</p>' +
-        '<div style="margin-top:1rem;"><a class="rrp-btn" href="/">View process documentation</a></div>';
+        (_pubRegEnabled
+          ? '<div class="rrp-card" style="max-width:520px;margin:2rem auto;text-align:center;padding:2rem;">' +
+              '<div style="font-size:2.5rem;margin-bottom:.75rem;">&#128221;</div>' +
+              '<h2 style="margin-bottom:.6rem;">Register to Submit</h2>' +
+              '<p style="color:var(--rrp-text-muted);line-height:1.6;margin-bottom:1.25rem;">Public submissions are open. Create a free account to submit your research documents.</p>' +
+              '<button type="button" class="rrp-btn" id="rrp-register-btn">Create Account &amp; Submit &rarr;</button>' +
+            '</div>'
+          : '<p class="rrp-info">If you do not have an account, contact your administrator.</p>' +
+            '<div style="margin-top:1rem;"><a class="rrp-btn" href="/">View process documentation</a></div>');
+      if (_pubRegEnabled) {
+        document.getElementById('rrp-register-btn').addEventListener('click', function () {
+          renderPublicRegistration(container);
+        });
+      }
       return;
     }
 
@@ -1392,12 +1865,103 @@
     }
   }
 
+  function renderPublicRegistration(container) {
+    var restBase = window.RRP && window.RRP.restBase ? window.RRP.restBase : '';
+    container.innerHTML =
+      '<div class="rrp-user-banner rrp-user-banner-guest">' +
+        '<span>Create a public account to submit your documents.</span>' +
+        '<a class="rrp-btn secondary" href="' + escapeHtml(loginUrl) + '">Already have an account? Log in</a>' +
+      '</div>' +
+      '<div class="rrp-card" style="max-width:480px;margin:2rem auto;padding:2rem;">' +
+        '<h2 style="margin-bottom:1.25rem;">&#128221; Register to Submit</h2>' +
+        '<form id="rrp-pub-reg-form" novalidate>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;">' +
+            '<label class="rrp-label">First Name<input type="text" class="rrp-input" name="firstName" required maxlength="60" autocomplete="given-name"></label>' +
+            '<label class="rrp-label">Last Name<input type="text" class="rrp-input" name="lastName" required maxlength="60" autocomplete="family-name"></label>' +
+          '</div>' +
+          '<label class="rrp-label" style="margin-top:.75rem;">Email Address<input type="email" class="rrp-input" name="email" required maxlength="254" autocomplete="email"></label>' +
+          '<label class="rrp-label" style="margin-top:.75rem;">Password <small style="color:var(--rrp-text-muted);">(minimum 8 characters)</small>' +
+            '<input type="password" class="rrp-input" name="password" required minlength="8" autocomplete="new-password">' +
+          '</label>' +
+          '<div style="margin-top:1.25rem;display:flex;gap:.75rem;align-items:center;">' +
+            '<button type="submit" class="rrp-btn">Create Account &rarr;</button>' +
+            '<span id="rrp-pub-reg-msg"></span>' +
+          '</div>' +
+        '</form>' +
+      '</div>';
+
+    document.getElementById('rrp-pub-reg-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var form    = e.target;
+      var msgEl   = document.getElementById('rrp-pub-reg-msg');
+      var btn     = form.querySelector('button[type=submit]');
+      var fd      = new FormData(form);
+      var payload = {
+        firstName: (fd.get('firstName') || '').trim(),
+        lastName:  (fd.get('lastName')  || '').trim(),
+        email:     (fd.get('email')     || '').trim(),
+        password:  fd.get('password')   || '',
+      };
+      if (!payload.firstName || !payload.lastName || !payload.email || payload.password.length < 8) {
+        msgEl.innerHTML = '<span class="rrp-error">Please fill in all fields. Password must be at least 8 characters.</span>';
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = 'Creating\u2026';
+      if (msgEl) msgEl.innerHTML = '';
+      // Use fetch() directly — endpoint is public (permission_callback __return_true)
+      fetch(restBase + '/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+        .then(function (resp) { return resp.json().then(function (data) { return { ok: resp.ok, data: data }; }); })
+        .then(function (result) {
+          if (result.ok && result.data && result.data.success) {
+            // F11: Restrict redirect to same-origin URLs to prevent open redirect.
+            var dest = (result.data.redirectUrl && result.data.redirectUrl.indexOf(window.location.origin + '/') === 0)
+              ? result.data.redirectUrl
+              : (window.location.origin + '/?portal=1');
+            container.innerHTML =
+              '<div class="rrp-card" style="max-width:480px;margin:3rem auto;text-align:center;padding:2.5rem;">' +
+                '<div style="font-size:3rem;margin-bottom:.75rem;">&#9989;</div>' +
+                '<h2 style="margin-bottom:.6rem;">Account Created!</h2>' +
+                '<p style="color:var(--rrp-text-muted);line-height:1.6;margin-bottom:1.25rem;">Welcome, ' + escapeHtml((result.data.userName) || 'there') + '! Taking you to the portal&hellip;</p>' +
+              '</div>';
+            setTimeout(function () { window.location.href = dest; }, 1500);
+          } else {
+            var errMsg = (result.data && result.data.error) || 'Registration failed. Please try again.';
+            msgEl.innerHTML = '<span class="rrp-error">' + escapeHtml(errMsg) + '</span>';
+            btn.disabled = false;
+            btn.textContent = 'Create Account \u2192';
+          }
+        })
+        .catch(function () {
+          msgEl.innerHTML = '<span class="rrp-error">Network error. Please check your connection and try again.</span>';
+          btn.disabled = false;
+          btn.textContent = 'Create Account \u2192';
+        });
+    });
+  }
+
   function renderForm(container, type) {
     var apiType = typeToApi[type] || type;
     var typeInfo = SUBMISSION_TYPES.find(function (t) { return t.id === type; }) || { title: type };
     var draftKey = 'rrp_draft_' + apiType;
     var savedDraft = null;
-    try { savedDraft = JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch (e) {}
+    try {
+      var _raw = localStorage.getItem(draftKey);
+      if (_raw) {
+        var _parsed = JSON.parse(_raw);
+        // F17: Discard drafts older than 7 days to prevent stale PII lingering in storage.
+        var _age = Date.now() - ((_parsed && _parsed.savedAt) || 0);
+        if (_age < 7 * 24 * 60 * 60 * 1000) {
+          savedDraft = (_parsed && _parsed.data !== undefined) ? _parsed.data : _parsed;
+        } else {
+          localStorage.removeItem(draftKey);
+        }
+      }
+    } catch (e) {}
 
     container.innerHTML =
       '<h1>Submit: ' + escapeHtml(typeInfo.title) + '</h1>' +
@@ -1487,15 +2051,22 @@
     var fileListEl = document.getElementById('rrp-file-list');
     fileInput.addEventListener('change', function () {
       var files = Array.from(fileInput.files || []);
-      if (files.length > 5) {
-        fileListEl.innerHTML = '<div class="rrp-error">Maximum 5 files allowed.</div>';
+      if (files.length > _uploadCfg.maxFiles) {
+        fileListEl.innerHTML = '<div class="rrp-error">Maximum ' + _uploadCfg.maxFiles + ' files allowed.</div>';
         return;
       }
+      var maxMb = _uploadCfg.maxFileSizeMb;
       fileListEl.innerHTML = files.map(function (f) {
         var mb = (f.size / 1024 / 1024).toFixed(2);
-        var ok = f.size <= 2 * 1024 * 1024;
-        return '<div class="rrp-file-item' + (!ok ? ' rrp-file-item-warn' : '') + '">' +
-          escapeHtml(f.name) + ' (' + mb + ' MB)' + (!ok ? ' ⚠ exceeds 2 MB limit' : '') + '</div>';
+        var ext = f.name.split('.').pop().toLowerCase();
+        var typeOk = _uploadCfg.allowedExtensions.indexOf(ext) !== -1;
+        var sizeOk = f.size <= maxMb * 1024 * 1024;
+        var warn = (!typeOk || !sizeOk) ? ' rrp-file-item-warn' : '';
+        var msg = !typeOk
+          ? ' ⚠ only ' + _uploadCfg.allowedExtensions.join(', ').toUpperCase() + ' are accepted'
+          : (!sizeOk ? ' ⚠ exceeds ' + maxMb + ' MB limit' : '');
+        return '<div class="rrp-file-item' + warn + '">' +
+          escapeHtml(f.name) + ' (' + mb + ' MB)' + msg + '</div>';
       }).join('');
     });
 
@@ -1504,7 +2075,7 @@
       var fd = new FormData(form);
       var body = { type: apiType };
       fd.forEach(function (v, k) { if (k !== 'files') body[k] = v; });
-      try { localStorage.setItem(draftKey, JSON.stringify(body)); } catch (e) {}
+      try { localStorage.setItem(draftKey, JSON.stringify({ data: body, savedAt: Date.now() })); } catch (e) {}
       body.status = 'draft';
       var errEl = document.getElementById('rrp-form-errors');
       api('POST', '/submit', body)
@@ -1543,6 +2114,25 @@
       var fd = new FormData(form);
       var body = { type: apiType };
       fd.forEach(function (v, k) { if (k !== 'files') body[k] = v; });
+
+      var selectedFiles = Array.from(fileInput.files || []);
+      var badTypeFiles = selectedFiles.filter(function (f) {
+        return _uploadCfg.allowedExtensions.indexOf(f.name.split('.').pop().toLowerCase()) === -1;
+      });
+      var oversizeFiles = selectedFiles.filter(function (f) {
+        return f.size > _uploadCfg.maxFileSizeMb * 1024 * 1024;
+      });
+      if (badTypeFiles.length) {
+        errEl.innerHTML = '<div class="rrp-error">Only ' + _uploadCfg.allowedExtensions.join(', ').toUpperCase() + ' files are accepted. Remove: ' +
+          badTypeFiles.map(function (f) { return escapeHtml(f.name); }).join(', ') + '</div>';
+        return;
+      }
+      if (oversizeFiles.length) {
+        errEl.innerHTML = '<div class="rrp-error">Files must be ' + _uploadCfg.maxFileSizeMb + ' MB or smaller. Remove: ' +
+          oversizeFiles.map(function (f) { return escapeHtml(f.name); }).join(', ') + '</div>';
+        return;
+      }
+
       var submitBtn = document.getElementById('rrp-submit-btn');
       submitBtn.disabled = true;
       submitBtn.textContent = 'Submitting…';
@@ -1560,7 +2150,12 @@
               credentials: 'same-origin',
               headers: { 'X-WP-Nonce': nonce },
               body: fileData
-            }).then(function () { return res; });
+            }).then(function (resp) {
+              if (!resp.ok) {
+                return resp.json().then(function (d) { throw { data: d }; });
+              }
+              return res;
+            });
           }
           return res;
         })
@@ -1854,6 +2449,10 @@
               '<div class="rrp-analytics-tile-val">' + (p.inProgressCount || 0) + '</div>' +
               '<div class="rrp-analytics-tile-lbl">In Progress</div>' +
             '</div>' +
+            '<div class="rrp-analytics-tile rrp-tile-gray">' +
+              '<div class="rrp-analytics-tile-val">' + (p.withdrawnCancelledCount || 0) + '</div>' +
+              '<div class="rrp-analytics-tile-lbl">Withdrawn / Cancelled</div>' +
+            '</div>' +
             '<div class="rrp-analytics-tile rrp-tile-red">' +
               '<div class="rrp-analytics-tile-val">' + (p.lateReviewAlerts || 0) + '</div>' +
               '<div class="rrp-analytics-tile-lbl">Late Alerts</div>' +
@@ -1872,6 +2471,47 @@
             '</div>' +
           '</div>' +
         '</div>';
+
+      // ── Reviewer Performance panel ────────────────────────────────────────
+      api('GET', '/analytics/reviewer-performance').then(function (pr) {
+        var revs = (pr && pr.reviewers) ? pr.reviewers : [];
+        var rowsHtml;
+        if (!revs.length) {
+          rowsHtml = '<tr><td colspan="5" style="text-align:center;color:var(--rrp-text-muted);padding:1rem;">No reviewer data yet.</td></tr>';
+        } else {
+          rowsHtml = revs.map(function (r) {
+            var onTime = r.onTimeRate != null ? Math.round(r.onTimeRate * 100) : null;
+            var revTrig = r.revisionTriggerRate != null ? Math.round(r.revisionTriggerRate * 100) : null;
+            var onTimeColor = onTime == null ? '' : onTime >= 80 ? 'color:#22c55e;font-weight:700;' : onTime >= 50 ? 'color:#f59e0b;font-weight:700;' : 'color:#ef4444;font-weight:700;';
+            return '<tr>' +
+              '<td>' + escapeHtml(r.name || r.email || '—') + '</td>' +
+              '<td style="text-align:center;">' + (r.totalDecisions || 0) + '</td>' +
+              '<td style="text-align:center;' + onTimeColor + '">' + (onTime != null ? onTime + '%' : '—') + '</td>' +
+              '<td style="text-align:center;">' + (revTrig != null ? revTrig + '%' : '—') + '</td>' +
+              '<td style="text-align:center;">' + (r.avgFeedbackLength != null ? Math.round(r.avgFeedbackLength) + ' ch' : '—') + '</td>' +
+            '</tr>';
+          }).join('');
+        }
+        var perfHtml = '<div class="rrp-analytics-card" style="margin-top:1rem;">' +
+          '<h2 class="rrp-analytics-card-title">&#128101; Reviewer Performance</h2>' +
+          '<div style="overflow-x:auto;">' +
+            '<table style="width:100%;border-collapse:collapse;font-size:0.875rem;">' +
+              '<thead>' +
+                '<tr style="border-bottom:2px solid var(--rrp-border);">' +
+                  '<th style="text-align:left;padding:0.5rem 0.75rem;">Reviewer</th>' +
+                  '<th style="text-align:center;padding:0.5rem 0.75rem;">Decisions</th>' +
+                  '<th style="text-align:center;padding:0.5rem 0.75rem;">On-Time Rate</th>' +
+                  '<th style="text-align:center;padding:0.5rem 0.75rem;">Revision Trigger</th>' +
+                  '<th style="text-align:center;padding:0.5rem 0.75rem;">Avg Feedback</th>' +
+                '</tr>' +
+              '</thead>' +
+              '<tbody>' + rowsHtml + '</tbody>' +
+            '</table>' +
+          '</div>' +
+        '</div>';
+        var el2 = document.getElementById('rrp-analytics-content');
+        if (el2) el2.innerHTML += perfHtml;
+      }).catch(function () {});
 
       document.getElementById('rrp-export-csv').addEventListener('click', function () {
         api('GET', '/reports/export?type=workflow&format=csv').then(function (resp) {
@@ -2167,6 +2807,63 @@
     return stages.length ? stages[stages.length - 1] : null;
   }
 
+  // ── Collaborative stage notes ──────────────────────────────────────────────
+  function startCollabSession(subId, pendingStages) {
+    var stageSelect = document.querySelector('#rrp-decision-form [name="stageName"]');
+    var ta     = document.getElementById('rrp-collab-notes-ta');
+    var badge  = document.getElementById('rrp-presence-badge');
+    var meta   = document.getElementById('rrp-collab-meta');
+    if (!ta) return;
+    var pollTimer = null;
+    var saveTimer = null;
+    function currentStage() {
+      return stageSelect ? stageSelect.value : (pendingStages && pendingStages[0] ? pendingStages[0].stageName : '');
+    }
+    function renderCollab(d) {
+      var stage = currentStage();
+      var sn    = (d.stageNotes && stage && d.stageNotes[stage]) || null;
+      if (sn && ta.value !== (sn.text || '')) { ta.value = sn.text || ''; }
+      if (sn && meta) {
+        meta.textContent = 'Last edited by ' + (sn.updatedByName || sn.updatedBy || 'unknown') + ' \u2013 ' + new Date(sn.updatedAt).toLocaleTimeString();
+      }
+      var presence = Array.isArray(d.presence) ? d.presence : [];
+      var myEmail  = ((window.RRP && window.RRP.userEmail) || '').toLowerCase();
+      var co = presence.filter(function (p) { return (p.email || '').toLowerCase() !== myEmail; });
+      if (badge) {
+        badge.innerHTML = co.length
+          ? '<span class="rrp-co-badge">&#128100; ' + escapeHtml(co.map(function (p) { return p.name || p.email; }).join(', ')) + ' also viewing</span>'
+          : '';
+      }
+    }
+    function doPoll() {
+      api('GET', '/submissions/' + encodeURIComponent(subId) + '/collab').then(renderCollab).catch(function () {});
+    }
+    function doHeartbeat() {
+      var stage = currentStage();
+      if (!stage) return;
+      api('PUT', '/submissions/' + encodeURIComponent(subId) + '/collab', { stageName: stage, presence: true }).then(renderCollab).catch(function () {});
+    }
+    function doSave(text) {
+      var stage = currentStage();
+      if (!stage) return;
+      api('PUT', '/submissions/' + encodeURIComponent(subId) + '/collab', { stageName: stage, notes: text, presence: true })
+        .then(function (d) { renderCollab(d); if (meta) meta.textContent = 'Saved just now'; })
+        .catch(function () {});
+    }
+    doPoll(); doHeartbeat();
+    pollTimer = setInterval(function () { doPoll(); doHeartbeat(); }, 20000);
+    ta.addEventListener('input', function () {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(function () { doSave(ta.value); }, 1000);
+    });
+    if (stageSelect) {
+      stageSelect.addEventListener('change', function () { doPoll(); doHeartbeat(); });
+    }
+    window.addEventListener('beforeunload', function () {
+      clearInterval(pollTimer); clearTimeout(saveTimer);
+    }, { once: true });
+  }
+
   function buildReviewerDecisionForm(sub) {
     var userEmail = ((window.RRP && window.RRP.userEmail) || '').toLowerCase();
     var stages = sub.reviewStages || [];
@@ -2175,7 +2872,14 @@
       var decided = (s.decisions || {})[userEmail];
       return assigned && !decided && !s.skipped;
     });
-    if (!pending.length) return '<p>No pending stages to review.</p>';
+    var collabBlock =
+      '<details class="rrp-collab-block" open style="margin-top:1.25rem;border:1px solid var(--rrp-border,#ddd);border-radius:.5rem;padding:.75rem 1rem;">' +
+        '<summary style="cursor:pointer;font-weight:600;">&#128101; Shared Stage Notes <span id="rrp-presence-badge" style="font-size:.75rem;font-weight:400;margin-left:.35rem;"></span></summary>' +
+        '<p style="font-size:.85rem;color:var(--rrp-text-muted);margin:.35rem 0 .5rem;">Visible to all reviewers on the same stage. Auto-saved when you stop typing.</p>' +
+        '<textarea id="rrp-collab-notes-ta" class="rrp-input" rows="4" style="width:100%;box-sizing:border-box;" placeholder="Jot down observations or discussion points for co-reviewers\u2026"></textarea>' +
+        '<div id="rrp-collab-meta" style="font-size:.78rem;color:var(--rrp-text-muted);margin-top:.3rem;min-height:1.2em;"></div>' +
+      '</details>';
+    if (!pending.length) return '<p style="color:var(--rrp-text-muted);">You have no pending stages requiring a decision.</p>' + collabBlock;
     return '<form id="rrp-decision-form">' +
       '<div class="rrp-form-block"><label>Stage</label><select name="stageName">' +
         pending.map(function (s) { return '<option value="' + escapeHtml(s.stageName) + '">' + escapeHtml(s.stageName) + '</option>'; }).join('') +
@@ -2212,7 +2916,8 @@
         '<button type="submit" class="rrp-btn secondary">Submit Request</button> ' +
         '<span id="rrp-ext-request-msg" style="margin-left:.5rem;"></span>' +
       '</form>' +
-    '</details>';
+    '</details>' +
+    collabBlock;
   }
 
   function buildRevisionForm(sub) {
@@ -2261,6 +2966,15 @@
       }
       var isSubmitter = (sub.submitterEmail || '').toLowerCase() === userEmail;
       var needsRevision = sub.status === 'Revision Required' || sub.status === 'Rejected';
+      var _withdrawableStatuses = ['Submitted - Awaiting Review', 'Submitted', 'Under Initial Review', 'Administrative Review', 'Revision Required', 'Revision Submitted'];
+      var canWithdraw   = isSubmitter && _withdrawableStatuses.indexOf(sub.status) !== -1;
+      var _nonCancellable = ['Withdrawn', 'Cancelled'];
+      var canCancel     = isAdmin && _nonCancellable.indexOf(sub.status) === -1;
+      var isLocked      = sub.status === 'Withdrawn' || sub.status === 'Cancelled';
+      var canAppeal     = isSubmitter && sub.status === 'Rejected' &&
+                          (!sub.appeal || sub.appeal.status === 'upheld' || sub.appeal.status === 'overturned');
+      var hasActiveAppeal = sub.appeal && (sub.appeal.status === 'pending' || sub.appeal.status === 'under_review');
+      var canFullPaper  = isSubmitter && sub.status === 'Full Paper Invited';
 
       // Stage timeline HTML
       // Find the index of the current active stage so future stages can show "Not Started"
@@ -2304,7 +3018,12 @@
         return '<div class="rrp-stage-block ' + statusClass + '">' +
           '<div class="rrp-stage-header"><strong>' + escapeHtml(stage.stageName) + '</strong>' +
             '<span class="rrp-stage-status">' + statusLabel + '</span>' +
-            (dl.deadline ? '<span class="rrp-deadline-badge">Due: ' + escapeHtml(new Date(dl.deadline).toLocaleDateString()) + '</span>' : '') +
+            (dl.deadline ? '<span class="rrp-deadline-badge">Due: ' + escapeHtml(new Date(dl.deadline).toLocaleDateString()) + '</span>' +
+              '<button type="button" class="rrp-btn secondary rrp-btn-sm rrp-cal-btn" style="margin-left:.3rem;padding:.1rem .35rem;" ' +
+              'data-cal-deadline="' + escapeHtml(dl.deadline || '') + '" ' +
+              'data-cal-title="' + escapeHtml('Review Deadline: ' + (stage.stageName || '') + ' \u2013 ' + (sub.title || sub.id || '')) + '" ' +
+              'data-cal-desc="' + escapeHtml('Submission ID: ' + (sub.id || '') + '\nStage: ' + (stage.stageName || '')) + '" ' +
+              'title="Add to calendar">📅</button>' : '') +
           '</div>' +
           (reviewerRows ? '<ul class="rrp-reviewer-decisions">' + reviewerRows + '</ul>' : '') +
           (feedbackHtml ? feedbackHtml : '') +
@@ -2312,6 +3031,8 @@
       }).join('');
 
       el.innerHTML =
+        (isLocked ? '<div class="rrp-locked-banner">&#128683; This submission is <strong>' + escapeHtml(sub.status) + '</strong>. All review and editing actions are disabled.</div>' : '') +
+        (sub.blindReview ? '<div class="rrp-blind-banner">&#129693; <strong>Double-blind review</strong> is active for this submission type. ' + (isAdmin ? 'All identities are visible to you as an administrator.' : (isSubmitter ? 'Reviewer identities are hidden until the final decision is issued.' : 'Author identity is hidden from reviewers.')) + '</div>' : '') +
         '<div class="rrp-detail-info">' +
           '<h2>' + escapeHtml(sub.title || sub.id) + '</h2>' +
           '<div class="rrp-detail-meta">' +
@@ -2320,6 +3041,7 @@
             '<span><strong>Status:</strong> <span class="rrp-status">' + escapeHtml(sub.status || '—') + '</span></span>' +
             '<span><strong>Submitted by:</strong> ' + escapeHtml(sub.submitterName || sub.submitterEmail || '—') + '</span>' +
             (sub.createdAt ? '<span><strong>Date:</strong> ' + escapeHtml(new Date(sub.createdAt).toLocaleDateString()) + '</span>' : '') +
+            (sub.phase ? '<span><strong>Phase:</strong> <span class="rrp-phase-badge phase-' + sub.phase + '">' + (sub.phase === 2 ? '&#128196; Full Paper' : '&#128209; Abstract') + '</span></span>' : '') +
           '</div>' +
           (sub.abstract ? '<div class="rrp-detail-abstract"><strong>Abstract</strong><p>' + escapeHtml(sub.abstract) + '</p></div>' : '') +
           (sub.keywords ? '<p><strong>Keywords:</strong> ' + escapeHtml(sub.keywords) + '</p>' : '') +
@@ -2389,7 +3111,7 @@
               '</li>';
             }).join('') +
             '</ul>' : '<p style="color:var(--rrp-text-muted);font-size:.88rem;">No comments yet.</p>') +
-          (isReviewer || isAdmin ?
+          ((isReviewer || isAdmin) && !isLocked ?
             '<div class="rrp-add-comment" id="rrp-add-comment-form">' +
               '<textarea id="rrp-comment-text" rows="3" placeholder="Add annotation or comment&hellip;" style="width:100%;box-sizing:border-box;"></textarea>' +
               '<div style="display:flex;gap:.5rem;margin-top:.5rem;">' +
@@ -2398,11 +3120,98 @@
               '</div>' +
             '</div>' : '') +
         '</div>' +
-        (isReviewer ? '<div id="rrp-reviewer-action" class="rrp-detail-section"><h3>Record Your Decision</h3>' + buildReviewerDecisionForm(sub) + '</div>' : '') +
-        (isSubmitter && needsRevision ? '<div id="rrp-submitter-revision" class="rrp-detail-section"><h3>Submit Revision</h3>' + buildRevisionForm(sub) + '</div>' : '') +
-        (isAdmin ? '<div id="rrp-admin-controls" class="rrp-detail-section"><h3>Administrative Controls</h3>' +
-          '<button type="button" class="rrp-btn secondary" id="rrp-skip-stage-btn">Skip Current Stage</button>' +
-          '<span id="rrp-skip-msg" style="margin-left:.5rem;"></span>' +
+        (isReviewer && !isLocked ? '<div id="rrp-reviewer-action" class="rrp-detail-section"><h3>Record Your Decision</h3>' + buildReviewerDecisionForm(sub) + '</div>' : '') +
+        (isSubmitter && needsRevision && !isLocked ? '<div id="rrp-submitter-revision" class="rrp-detail-section"><h3>Submit Revision</h3>' + buildRevisionForm(sub) + '</div>' : '') +
+        (canWithdraw && !isLocked ? '<div id="rrp-submitter-withdraw" class="rrp-detail-section"><h3>&#128683; Withdraw Submission</h3>' +
+          '<p style="color:var(--rrp-text-muted);font-size:.9rem;margin-top:0;">Withdrawing will permanently remove this submission from the review process.</p>' +
+          '<button type="button" class="rrp-btn danger" id="rrp-withdraw-btn">&#128683; Withdraw My Submission</button>' +
+          '<span id="rrp-withdraw-msg" style="margin-left:.5rem;"></span>' +
+        '</div>' : '') +
+        // ── Decision Appeal (submitter) ──
+        (canAppeal ? '<div id="rrp-submitter-appeal" class="rrp-detail-section">' +
+          '<h3>&#9878; Appeal Rejection Decision</h3>' +
+          '<p style="color:var(--rrp-text-muted);font-size:.9rem;margin-top:0;">If you believe the rejection was unwarranted, you may file a formal appeal. It will be reviewed by a senior coordinator.</p>' +
+          '<textarea id="rrp-appeal-reason" rows="4" placeholder="Explain the grounds for your appeal\u2026" style="width:100%;box-sizing:border-box;"></textarea>' +
+          '<div style="display:flex;gap:.5rem;margin-top:.5rem;">' +
+            '<button type="button" class="rrp-btn" id="rrp-appeal-btn">&#9878; Submit Appeal</button>' +
+            '<span id="rrp-appeal-msg" style="align-self:center;"></span>' +
+          '</div>' +
+        '</div>' : '') +
+        // ── Appeal status banner (visible to submitter and admin) ──
+        (sub.appeal && (isSubmitter || isAdmin) ? '<div class="rrp-appeal-banner">' +
+          '&#9878; <strong>Appeal ' +
+          (sub.appeal.status === 'pending'      ? 'Pending \u2014 awaiting coordinator review' :
+           sub.appeal.status === 'under_review' ? 'Under Review' :
+           sub.appeal.status === 'upheld'       ? 'Upheld \u2014 rejection stands' :
+                                                  'Overturned \u2014 returned for reconsideration') + '</strong>' +
+          (sub.appeal.submittedAt ? ' \u00b7 Filed ' + new Date(sub.appeal.submittedAt).toLocaleDateString() : '') +
+          (sub.appeal.notes ? '<div style="margin-top:.3rem;font-style:italic;">' + escapeHtml(sub.appeal.notes) + '</div>' : '') +
+        '</div>' : '') +
+        // ── Appeal processing panel (admin/coordinator) ──
+        (isAdmin && hasActiveAppeal && !isLocked ? '<div id="rrp-appeal-panel" class="rrp-detail-section">' +
+          '<h3>&#9878; Process Appeal</h3>' +
+          '<div class="rrp-appeal-panel">' +
+            '<p style="margin:.25rem 0 .35rem;font-size:.88rem;"><strong>Reason from submitter:</strong></p>' +
+            '<blockquote style="margin:.3rem 0 .75rem 0;padding:.5rem .75rem;border-left:3px solid #93c5fd;background:#f0f9ff;font-size:.88rem;">' +
+              escapeHtml(sub.appeal.reason || '') +
+            '</blockquote>' +
+            '<label class="rrp-label" style="margin-bottom:.6rem;">Coordinator Notes <small style="font-weight:400;color:#6b7280;">(will be sent to submitter)</small><br>' +
+              '<textarea id="rrp-appeal-notes" rows="3" style="width:100%;box-sizing:border-box;" placeholder="Add notes\u2026"></textarea>' +
+            '</label>' +
+            '<div style="display:flex;flex-wrap:wrap;gap:.5rem;">' +
+              (sub.appeal.status === 'pending' ? '<button type="button" class="rrp-btn secondary" id="rrp-appeal-start-review">&#128203; Begin Review</button>' : '') +
+              '<button type="button" class="rrp-btn danger" id="rrp-appeal-uphold">&#10005; Uphold Rejection</button>' +
+              '<button type="button" class="rrp-btn" id="rrp-appeal-overturn" style="background:#16a34a;color:#fff;">&#10003; Overturn \u2014 Return for Reconsideration</button>' +
+            '</div>' +
+            '<span id="rrp-appeal-action-msg" style="margin-top:.4rem;display:block;"></span>' +
+          '</div>' +
+        '</div>' : '') +
+        // ── Two-phase: Full Paper submission ──
+        (canFullPaper ? '<div id="rrp-full-paper-section" class="rrp-detail-section">' +
+          '<h3>&#128196; Submit Full Paper</h3>' +
+          '<div class="rrp-blind-banner" style="margin-bottom:.75rem;">&#127881; Abstract accepted! Please upload your full paper using the Documents section above, then click below to advance to full paper review.</div>' +
+          '<button type="button" class="rrp-btn" id="rrp-full-paper-btn">&#128196; Submit Full Paper for Review</button>' +
+          '<span id="rrp-full-paper-msg" style="margin-left:.5rem;"></span>' +
+        '</div>' : '') +
+        // ── Revision diff ──
+        (sub.revisionHistory && sub.revisionHistory.length > 0 ? (function () {
+          var rh = sub.revisionHistory;
+          var fields = ['title', 'abstract', 'keywords', 'researchArea'];
+          var fLabels = { title: 'Title', abstract: 'Abstract', keywords: 'Keywords', researchArea: 'Research Area' };
+          var roundOpts = rh.map(function (snap, i) {
+            return '<option value="' + i + '">Round ' + escapeHtml(String(snap.round || (i + 1))) +
+              (snap.submittedAt ? ' \u2014 ' + new Date(snap.submittedAt).toLocaleDateString() : '') + '</option>';
+          }).join('');
+          return '<div class="rrp-detail-section">' +
+            '<h3>&#128202; Revision History</h3>' +
+            '<p style="color:var(--rrp-text-muted);font-size:.9rem;margin-top:0;">' + rh.length + ' revision round(s) on record.</p>' +
+            '<div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;">' +
+              '<label for="rrp-diff-round" style="font-size:.88rem;font-weight:600;">Compare round:</label>' +
+              '<select id="rrp-diff-round" class="rrp-diff-round-sel">' + roundOpts + '</select>' +
+              '<button type="button" class="rrp-btn secondary" id="rrp-diff-btn">&#128202; Show Comparison</button>' +
+            '</div>' +
+            '<div class="rrp-diff-modal" id="rrp-diff-modal" style="display:none;margin-top:.75rem;">' +
+              '<div class="rrp-diff-header" id="rrp-diff-header"></div>' +
+              '<div style="overflow-x:auto;"><table class="rrp-diff-table"><thead id="rrp-diff-thead"></thead><tbody id="rrp-diff-tbody"></tbody></table></div>' +
+            '</div>' +
+          '</div>';
+        })() : '') +
+        (isAdmin && !isLocked ? '<div id="rrp-admin-controls" class="rrp-detail-section"><h3>Administrative Controls</h3>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;">' +
+            '<button type="button" class="rrp-btn secondary" id="rrp-skip-stage-btn">&#9193; Skip Current Stage</button>' +
+            '<button type="button" class="rrp-btn secondary" id="rrp-similarity-btn">&#128196; Run Similarity Check</button>' +
+            (canCancel ? '<button type="button" class="rrp-btn danger" id="rrp-cancel-submission-btn">&#10060; Cancel Submission</button>' : '') +
+          '</div>' +
+          '<div id="rrp-similarity-result">' +
+            (sub.similarityScore != null
+              ? '<span style="font-size:.88rem;color:var(--rrp-text-muted);">Last check: ' +
+                  '<strong style="color:' + (sub.similarityScore < 10 ? '#15803d' : sub.similarityScore < 30 ? '#b45309' : '#b91c1c') + ';">' + sub.similarityScore + '%</strong>' +
+                  ' similarity' + (sub.similarityCheckedAt ? ' on ' + new Date(sub.similarityCheckedAt).toLocaleDateString() : '') +
+                  (sub.similarityReportUrl ? ' &mdash; <a href="' + safeUrl(sub.similarityReportUrl) + '" target="_blank" rel="noopener">View Report</a>' : '') +
+                '</span>'
+              : '')
+          + '</div>' +
+          '<span id="rrp-skip-msg" style="margin-top:.5rem;display:block;"></span>' +
         '</div>' : '');
 
       // Wire inline document viewer
@@ -2496,45 +3305,12 @@
       // Wire reviewer decision form
       var decForm = document.getElementById('rrp-decision-form');
       if (decForm) {
-        // Initialize Quill rich-text editor for the feedback field
-        loadQuill().then(function () {
-          var editorEl = document.getElementById('rrp-feedback-editor');
-          if (!editorEl || !window.Quill) return;
-          var quill = new Quill(editorEl, {
-            theme: 'snow',
-            placeholder: 'Your feedback to the submitter\u2026',
-            modules: {
-              toolbar: [
-                ['bold', 'italic', 'underline', 'strike'],
-                [{ list: 'ordered' }, { list: 'bullet' }],
-                ['blockquote'],
-                ['clean']
-              ]
-            }
-          });
-          quill.on('text-change', function () {
-            var hiddenEl = document.getElementById('rrp-feedback-hidden');
-            if (hiddenEl) {
-              // Store empty string when editor is blank (just a <p><br></p>)
-              hiddenEl.value = quill.getText().trim() === '' ? '' : quill.root.innerHTML;
-            }
-          });
-        }).catch(function () {
-          // Quill failed to load — fall back to a plain textarea
-          var editorEl = document.getElementById('rrp-feedback-editor');
-          if (editorEl) {
-            var ta = document.createElement('textarea');
-            ta.name = 'feedbackMsgFallback';
-            ta.rows = 4;
-            ta.style.width = '100%';
-            ta.placeholder = 'Your feedback to the submitter\u2026';
-            ta.addEventListener('input', function () {
-              var hiddenEl = document.getElementById('rrp-feedback-hidden');
-              if (hiddenEl) hiddenEl.value = ta.value;
-            });
-            editorEl.parentNode.replaceChild(ta, editorEl);
-          }
-        });
+        // Initialize built-in rich-text editor (no CDN — works with strict CSP)
+        var _fbEditorEl = document.getElementById('rrp-feedback-editor');
+        var _fbHiddenEl = document.getElementById('rrp-feedback-hidden');
+        if (_fbEditorEl && _fbHiddenEl) {
+          _buildRichEditor(_fbEditorEl, _fbHiddenEl, 'Your feedback to the submitter\u2026');
+        }
 
         decForm.addEventListener('submit', function (e) {
           e.preventDefault();
@@ -2606,6 +3382,16 @@
         });
       }
 
+      // Start collaborative notes session if reviewer
+      if (isReviewer) {
+        // Pass ALL assigned stages (not just pending) so the collab block works
+        // even after the reviewer has already submitted their decision.
+        var _assignedCollab = (sub.reviewStages || []).filter(function (s) {
+          return (s.reviewers || []).some(function (r) { return (r.email || '').toLowerCase() === userEmail; });
+        });
+        startCollabSession(submissionId, _assignedCollab);
+      }
+
       // Wire revision form
       var revForm = document.getElementById('rrp-revision-form');
       if (revForm) {
@@ -2660,6 +3446,61 @@
         });
       }
 
+      // Wire submitter withdraw button
+      var withdrawBtn = document.getElementById('rrp-withdraw-btn');
+      if (withdrawBtn) {
+        withdrawBtn.addEventListener('click', function () {
+          if (!confirm('Withdraw "' + escapeHtml(sub.title || sub.id) + '"?\n\nThis will permanently remove the submission from the review process and cannot be undone.')) return;
+          withdrawBtn.disabled = true;
+          withdrawBtn.textContent = 'Withdrawing\u2026';
+          api('PATCH', '/submissions/' + encodeURIComponent(submissionId), { status: 'Withdrawn' })
+            .then(function () {
+              if (typeof backFn === 'function') backFn(); else renderSelection(container);
+            })
+            .catch(function (err) {
+              withdrawBtn.disabled = false;
+              withdrawBtn.textContent = '\u{1F6AB} Withdraw My Submission';
+              document.getElementById('rrp-withdraw-msg').innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || 'Withdrawal failed. Please try again.') + '</span>';
+            });
+        });
+      }
+
+      // Wire coordinator/admin cancel button
+      var cancelSubBtn = document.getElementById('rrp-cancel-submission-btn');
+      if (cancelSubBtn) {
+        cancelSubBtn.addEventListener('click', function () {
+          var reason = prompt('Please enter a reason for cancellation:');
+          if (reason === null) return;
+          reason = reason.trim();
+          if (!reason) { alert('A cancellation reason is required.'); return; }
+          if (!confirm('Cancel "' + (sub.title || sub.id) + '"?\n\nReason: ' + reason + '\n\nThis action cannot be undone.')) return;
+          cancelSubBtn.disabled = true;
+          cancelSubBtn.textContent = 'Cancelling\u2026';
+          api('PATCH', '/submissions/' + encodeURIComponent(submissionId), { action: 'cancel', reason: reason })
+            .then(function () {
+              if (typeof backFn === 'function') backFn(); else renderSelection(container);
+            })
+            .catch(function (err) {
+              cancelSubBtn.disabled = false;
+              cancelSubBtn.textContent = '\u274C Cancel Submission';
+              document.getElementById('rrp-skip-msg').innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || 'Cancellation failed. Please try again.') + '</span>';
+            });
+        });
+      }
+
+      // Wire calendar-add buttons on stage deadline badges
+      el.querySelectorAll('.rrp-cal-btn').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          showCalendarDropdown(
+            btn,
+            btn.getAttribute('data-cal-title') || '',
+            btn.getAttribute('data-cal-deadline') || '',
+            btn.getAttribute('data-cal-desc') || ''
+          );
+        });
+      });
+
       // Wire skip stage button
       var skipBtn = document.getElementById('rrp-skip-stage-btn');
       if (skipBtn) {
@@ -2678,10 +3519,165 @@
         });
       }
 
+      // Wire similarity check button
+      var simBtn = document.getElementById('rrp-similarity-btn');
+      if (simBtn) {
+        simBtn.addEventListener('click', function () {
+          var resEl = document.getElementById('rrp-similarity-result');
+          simBtn.disabled = true; simBtn.textContent = 'Checking\u2026';
+          if (resEl) resEl.innerHTML = '<span class="rrp-loading" style="font-size:.88rem;">Running check\u2026</span>';
+          api('POST', '/submissions/' + encodeURIComponent(submissionId) + '/similarity-check', {})
+            .then(function (r) {
+              simBtn.disabled = false; simBtn.textContent = '\uD83D\uDCC4 Run Similarity Check';
+              if (r.pending) {
+                if (resEl) resEl.innerHTML = '<span style="font-size:.88rem;color:var(--rrp-text-muted);">&#8987; ' + escapeHtml(r.message || 'Similarity check in progress. Try again in a few minutes.') + '</span>';
+              } else {
+                var col = r.score < 10 ? '#15803d' : r.score < 30 ? '#b45309' : '#b91c1c';
+                if (resEl) resEl.innerHTML = '<span style="font-size:.88rem;color:var(--rrp-text-muted);">Score: <strong style="color:' + col + ';">' + r.score + '%</strong> similarity' +
+                  (r.checkedAt ? ' on ' + new Date(r.checkedAt).toLocaleDateString() : '') +
+                  (r.reportUrl ? ' &mdash; <a href="' + safeUrl(r.reportUrl) + '" target="_blank" rel="noopener">View Report</a>' : '') +
+                  '</span>';
+              }
+            })
+            .catch(function (err) {
+              simBtn.disabled = false; simBtn.textContent = '\uD83D\uDCC4 Run Similarity Check';
+              if (resEl) resEl.innerHTML = '<span class="rrp-error">' + escapeHtml((err && err.data && err.data.error) || 'Check failed.') + '</span>';
+            });
+        });
+      }
+
+      // Wire appeal (submitter)
+      var appealBtn = document.getElementById('rrp-appeal-btn');
+      if (appealBtn) {
+        appealBtn.addEventListener('click', function () {
+          var reason = (document.getElementById('rrp-appeal-reason').value || '').trim();
+          var msgEl  = document.getElementById('rrp-appeal-msg');
+          if (!reason) { msgEl.innerHTML = '<span class="rrp-error">Please enter the grounds for your appeal.</span>'; return; }
+          appealBtn.disabled = true;
+          appealBtn.textContent = 'Submitting\u2026';
+          msgEl.innerHTML = '';
+          api('POST', '/submissions/' + encodeURIComponent(submissionId) + '/appeal', { reason: reason })
+            .then(function () {
+              msgEl.innerHTML = '<span class="rrp-success">Appeal submitted. A coordinator will review it shortly.</span>';
+              setTimeout(function () { renderSubmissionDetail(submissionId, container, backFn); }, 1800);
+            })
+            .catch(function (err) {
+              appealBtn.disabled = false; appealBtn.textContent = '\u2696\uFE0F Submit Appeal';
+              msgEl.innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || 'Submission failed.') + '</span>';
+            });
+        });
+      }
+
+      // Wire appeal processing (admin)
+      function _wireAppealAction(btnId, action) {
+        var btn = document.getElementById(btnId);
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+          var notes  = (document.getElementById('rrp-appeal-notes') ? document.getElementById('rrp-appeal-notes').value : '') || '';
+          var msgEl  = document.getElementById('rrp-appeal-action-msg');
+          if (action === 'uphold' && !confirm('Uphold the rejection? The submitter will be notified.')) return;
+          if (action === 'overturn' && !confirm('Overturn the rejection? The submission will be returned for reconsideration.')) return;
+          btn.disabled = true;
+          if (msgEl) msgEl.innerHTML = '<span class="rrp-loading">Saving\u2026</span>';
+          api('PATCH', '/submissions/' + encodeURIComponent(submissionId) + '/appeal', { action: action, notes: notes })
+            .then(function () {
+              if (msgEl) msgEl.innerHTML = '<span class="rrp-success">Appeal decision recorded.</span>';
+              setTimeout(function () { renderSubmissionDetail(submissionId, container, backFn); }, 1600);
+            })
+            .catch(function (err) {
+              btn.disabled = false;
+              if (msgEl) msgEl.innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || 'Failed.') + '</span>';
+            });
+        });
+      }
+      _wireAppealAction('rrp-appeal-start-review', 'start_review');
+      _wireAppealAction('rrp-appeal-uphold', 'uphold');
+      _wireAppealAction('rrp-appeal-overturn', 'overturn');
+
+      // Wire full-paper submission (two-phase)
+      var fpBtn = document.getElementById('rrp-full-paper-btn');
+      if (fpBtn) {
+        fpBtn.addEventListener('click', function () {
+          if (!confirm('Submit for full paper review? This will advance the submission to Phase 2.')) return;
+          fpBtn.disabled = true; fpBtn.textContent = 'Submitting\u2026';
+          var fpMsgEl = document.getElementById('rrp-full-paper-msg');
+          api('PATCH', '/submissions/' + encodeURIComponent(submissionId), { action: 'submit_full_paper' })
+            .then(function () {
+              if (fpMsgEl) fpMsgEl.innerHTML = '<span class="rrp-success">Full paper submitted for review!</span>';
+              setTimeout(function () { renderSubmissionDetail(submissionId, container, backFn); }, 1600);
+            })
+            .catch(function (err) {
+              fpBtn.disabled = false; fpBtn.textContent = '\uD83D\uDCC4 Submit Full Paper for Review';
+              if (fpMsgEl) fpMsgEl.innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || 'Failed.') + '</span>';
+            });
+        });
+      }
+
+      // Wire revision diff toggle
+      var diffBtn = document.getElementById('rrp-diff-btn');
+      var diffModal = document.getElementById('rrp-diff-modal');
+      if (diffBtn && diffModal) {
+        var fields   = ['title', 'abstract', 'keywords', 'researchArea'];
+        var fLabels  = { title: 'Title', abstract: 'Abstract', keywords: 'Keywords', researchArea: 'Research Area' };
+        var rh       = sub.revisionHistory || [];
+        var roundSel = document.getElementById('rrp-diff-round');
+
+        function buildDiff() {
+          var idx  = roundSel ? parseInt(roundSel.value, 10) : rh.length - 1;
+          var snap = rh[idx] || rh[rh.length - 1];
+          var roundLabel = 'Round ' + (snap.round || (idx + 1));
+          var rows = fields.map(function (f) {
+            var ov = snap[f] || ''; var nv = sub[f] || '';
+            var changed = ov !== nv;
+            return '<tr' + (changed ? ' class="rrp-diff-changed"' : '') + '>' +
+              '<td><strong>' + fLabels[f] + '</strong></td>' +
+              '<td class="rrp-diff-old">' + escapeHtml(ov) + '</td>' +
+              '<td class="rrp-diff-new"><strong>' + escapeHtml(nv) + '</strong></td>' +
+            '</tr>';
+          }).join('');
+          var hdr = document.getElementById('rrp-diff-header');
+          var th  = document.getElementById('rrp-diff-thead');
+          var tb  = document.getElementById('rrp-diff-tbody');
+          if (hdr) hdr.innerHTML = '<h3>Revision Comparison \u2014 ' + escapeHtml(roundLabel) + ' vs Current</h3>' +
+            '<button type="button" class="rrp-btn secondary" id="rrp-diff-close">&#10005; Close</button>';
+          if (th)  th.innerHTML  = '<tr><th>Field</th><th>Before (' + escapeHtml(roundLabel) + ')</th><th>After (Current)</th></tr>';
+          if (tb)  tb.innerHTML  = rows;
+          var cl = document.getElementById('rrp-diff-close');
+          if (cl) cl.addEventListener('click', function () {
+            diffModal.style.display = 'none';
+            diffBtn.textContent = '\uD83D\uDCCA Show Comparison';
+          });
+        }
+
+        diffBtn.addEventListener('click', function () {
+          var opening = diffModal.style.display === 'none';
+          if (opening) { buildDiff(); diffModal.style.display = ''; }
+          else           diffModal.style.display = 'none';
+          diffBtn.textContent = opening ? '\uD83D\uDCCA Hide Comparison' : '\uD83D\uDCCA Show Comparison';
+        });
+
+        if (roundSel) roundSel.addEventListener('change', function () {
+          if (diffModal.style.display !== 'none') buildDiff();
+        });
+      }
+
     }).catch(function () {
       var el = document.getElementById('rrp-detail-content');
       if (el) el.innerHTML = '<div class="rrp-error">Unable to load submission. You may not have permission to view it.</div>';
     });
+  }
+
+  /**
+   * Return a URL that is safe to use in an href attribute.
+   * Only allows http:// and https:// schemes to prevent javascript:,
+   * data:, vbscript:, and other dangerous protocol XSS via href.
+   * Returns '#' for any disallowed or blank value.
+   */
+  function safeUrl(url) {
+    if (url == null || url === '') return '#';
+    var s = String(url).trim();
+    if (/^https?:\/\//i.test(s)) return escapeHtml(s);
+    return '#';
   }
 
   function escapeHtml(s) {
@@ -2729,35 +3725,61 @@
     return tmp.innerHTML;
   }
 
-  // Dynamically load Quill rich-text editor from CDN (cached after first call)
-  var _quillLoaded = false;
-  var _quillLoading = null;
-  function loadQuill() {
-    if (_quillLoaded && window.Quill) return Promise.resolve();
-    if (_quillLoading) return _quillLoading;
-    _quillLoading = new Promise(function (resolve, reject) {
-      // Load Quill CSS
-      if (!document.getElementById('rrp-quill-css')) {
-        var link = document.createElement('link');
-        link.id   = 'rrp-quill-css';
-        link.rel  = 'stylesheet';
-        link.href = 'https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css';
-        document.head.appendChild(link);
+  /**
+   * Build a self-contained rich-text editor inside `container`.
+   * Uses only execCommand + contenteditable — no external dependencies.
+   * Fully compatible with the strict Content-Security-Policy ('self' only).
+   * Updates `hiddenInput.value` with safe HTML on every keystroke.
+   */
+  function _buildRichEditor(container, hiddenInput, placeholder) {
+    var TOOLBAR = [
+      { cmd: 'bold',                title: 'Bold',            html: '<b>B</b>'       },
+      { cmd: 'italic',              title: 'Italic',          html: '<i>I</i>'       },
+      { cmd: 'underline',           title: 'Underline',       html: '<u>U</u>'       },
+      { cmd: 'strikeThrough',       title: 'Strikethrough',   html: '<s>S</s>'       },
+      { sep: true },
+      { cmd: 'insertUnorderedList', title: 'Bullet list',     html: '&#8226;&#8202;List' },
+      { cmd: 'insertOrderedList',   title: 'Numbered list',   html: '1.&#8202;List'  },
+      { cmd: 'formatBlock', arg: 'blockquote', title: 'Blockquote', html: '\u201c\u201d' },
+      { sep: true },
+      { cmd: 'removeFormat',        title: 'Clear formatting', html: '\u2715'        }
+    ];
+    var toolbar = document.createElement('div');
+    toolbar.className = 'rrp-rte-toolbar';
+    TOOLBAR.forEach(function (item) {
+      if (item.sep) {
+        var sep = document.createElement('span'); sep.className = 'rrp-rte-sep';
+        toolbar.appendChild(sep); return;
       }
-      // Load Quill JS
-      if (!document.getElementById('rrp-quill-js')) {
-        var script = document.createElement('script');
-        script.id  = 'rrp-quill-js';
-        script.src = 'https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js';
-        script.onload  = function () { _quillLoaded = true; resolve(); };
-        script.onerror = function () { reject(new Error('Quill failed to load')); };
-        document.head.appendChild(script);
-      } else if (window.Quill) {
-        _quillLoaded = true;
-        resolve();
-      }
+      var btn = document.createElement('button');
+      btn.type = 'button'; btn.innerHTML = item.html; btn.title = item.title;
+      btn.className = 'rrp-rte-btn';
+      btn.addEventListener('mousedown', function (e) {
+        e.preventDefault(); // keep editor focused
+        document.execCommand(item.cmd, false, item.arg || null);
+        editor.focus();
+      });
+      toolbar.appendChild(btn);
     });
-    return _quillLoading;
+    var editor = document.createElement('div');
+    editor.contentEditable = 'true';
+    editor.className = 'rrp-rte-editor rrp-rte-empty';
+    if (placeholder) editor.setAttribute('data-placeholder', placeholder);
+    function syncHidden() {
+      var empty = editor.textContent.trim() === '';
+      hiddenInput.value = empty ? '' : editor.innerHTML;
+      editor.classList.toggle('rrp-rte-empty', empty);
+    }
+    editor.addEventListener('input', syncHidden);
+    // Paste as plain text to prevent XSS from clipboard HTML
+    editor.addEventListener('paste', function (e) {
+      e.preventDefault();
+      var text = (e.clipboardData || window.clipboardData).getData('text/plain');
+      document.execCommand('insertText', false, text);
+    });
+    container.innerHTML = '';
+    container.appendChild(toolbar);
+    container.appendChild(editor);
   }
 
   function renderTimeline(submissionId, container) {
@@ -2786,6 +3808,333 @@
       .catch(function () {
         document.getElementById('rrp-timeline-content').innerHTML = '<div class="rrp-error">Unable to load timeline.</div>';
       });
+  }
+
+  // ── Calendar helpers ──────────────────────────────────────────────────────
+
+  // showCalendarDropdown: shows a small dropdown near `anchorEl` to add an event
+  // to Google Calendar, Outlook (web), or download an .ics file.
+  function showCalendarDropdown(anchorEl, title, deadline, desc) {
+    // Remove any existing dropdown
+    var old = document.getElementById('rrp-cal-dropdown');
+    if (old) { old.parentNode.removeChild(old); }
+
+    if (!deadline) return;
+    var dt = new Date(deadline);
+    var dtNext = new Date(dt.getTime() + 86400000);
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+    function ymd(d) { return d.getFullYear() + '' + pad(d.getMonth()+1) + '' + pad(d.getDate()); }
+    function isoDay(d) { return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()); }
+
+    var encTitle = encodeURIComponent(title);
+    var encDesc  = encodeURIComponent(desc);
+    var googleUrl = 'https://calendar.google.com/calendar/r/eventedit?text=' + encTitle +
+      '&dates=' + ymd(dt) + '/' + ymd(dtNext) + '&details=' + encDesc;
+    var outlookUrl = 'https://outlook.live.com/calendar/0/deeplink/compose?subject=' + encTitle +
+      '&startdt=' + isoDay(dt) + '&enddt=' + isoDay(dtNext) + '&body=' + encDesc;
+
+    // Build .ics content
+    function icsDate(d) { return ymd(d); }
+    var icsContent = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n' +
+      'DTSTART;VALUE=DATE:' + icsDate(dt) + '\r\n' +
+      'DTEND;VALUE=DATE:' + icsDate(dtNext) + '\r\n' +
+      'SUMMARY:' + title.replace(/\n/g, '\\n') + '\r\n' +
+      'DESCRIPTION:' + desc.replace(/\n/g, '\\n') + '\r\n' +
+      'END:VEVENT\r\nEND:VCALENDAR';
+
+    var div = document.createElement('div');
+    div.id = 'rrp-cal-dropdown';
+    div.className = 'rrp-cal-dropdown';
+    div.innerHTML =
+      '<a class="rrp-cal-opt" href="' + escapeHtml(googleUrl) + '" target="_blank" rel="noopener">&#128197; Add to Google Calendar</a>' +
+      '<a class="rrp-cal-opt" href="' + escapeHtml(outlookUrl) + '" target="_blank" rel="noopener">&#128197; Add to Outlook</a>' +
+      '<a class="rrp-cal-opt" href="#" id="rrp-cal-ics-dl">&#8681; Download .ics</a>';
+    document.body.appendChild(div);
+
+    var rect = anchorEl.getBoundingClientRect();
+    div.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+    div.style.left = (rect.left  + window.scrollX) + 'px';
+
+    div.querySelector('#rrp-cal-ics-dl').addEventListener('click', function (e) {
+      e.preventDefault();
+      var blob = new Blob([icsContent], { type: 'text/calendar' });
+      var url  = URL.createObjectURL(blob);
+      var a    = document.createElement('a');
+      a.href     = url;
+      a.download = 'deadline.ics';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(url); a.parentNode.removeChild(a); }, 1000);
+      div.parentNode.removeChild(div);
+    });
+
+    function closeDropdown(e) {
+      if (!div.contains(e.target) && e.target !== anchorEl) {
+        div.parentNode && div.parentNode.removeChild(div);
+        document.removeEventListener('click', closeDropdown);
+      }
+    }
+    setTimeout(function () { document.addEventListener('click', closeDropdown); }, 0);
+  }
+
+  // ── Deadline Calendar (monthly grid) ──────────────────────────────────────
+  function renderDeadlineCalendar(container, backFn) {
+    var today = new Date();
+    var viewYear  = today.getFullYear();
+    var viewMonth = today.getMonth(); // 0-indexed
+
+    function monthName(m) {
+      return ['January','February','March','April','May','June',
+              'July','August','September','October','November','December'][m];
+    }
+
+    function render(year, month) {
+      container.innerHTML =
+        '<h1>&#128197; Deadline Calendar</h1>' +
+        '<button type="button" class="rrp-btn secondary" style="margin-bottom:1rem;" id="rrp-cal-back">&#8592; Back</button>' +
+        '<div class="rrp-dashboard-section">' +
+          '<div class="rrp-cal-header">' +
+            '<button type="button" class="rrp-btn secondary rrp-btn-sm" id="rrp-cal-prev">&#8249;</button>' +
+            '<strong style="min-width:11rem;text-align:center;">' + escapeHtml(monthName(month) + ' ' + year) + '</strong>' +
+            '<button type="button" class="rrp-btn secondary rrp-btn-sm" id="rrp-cal-next">&#8250;</button>' +
+          '</div>' +
+          '<div class="rrp-cal-grid" id="rrp-cal-grid">' +
+            ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(function (d) {
+              return '<div class="rrp-cal-dow">' + d + '</div>';
+            }).join('') +
+            '<div class="rrp-cal-loading" style="grid-column:1/-1;padding:1rem;color:var(--rrp-text-muted);">Loading…</div>' +
+          '</div>' +
+        '</div>';
+
+      document.getElementById('rrp-cal-back').addEventListener('click', function () {
+        if (typeof backFn === 'function') backFn(); else container.innerHTML = '';
+      });
+      document.getElementById('rrp-cal-prev').addEventListener('click', function () {
+        var d = new Date(year, month - 1, 1);
+        render(d.getFullYear(), d.getMonth());
+      });
+      document.getElementById('rrp-cal-next').addEventListener('click', function () {
+        var d = new Date(year, month + 1, 1);
+        render(d.getFullYear(), d.getMonth());
+      });
+
+      api('GET', '/calendar-events').then(function (res) {
+        var events = res.events || [];
+        // Index events by YYYY-MM-DD
+        var byDay = {};
+        events.forEach(function (ev) {
+          var day = (ev.deadline || '').substring(0, 10);
+          if (!byDay[day]) byDay[day] = [];
+          byDay[day].push(ev);
+        });
+
+        var firstDay = new Date(year, month, 1).getDay(); // 0=Sun
+        var daysInMonth = new Date(year, month + 1, 0).getDate();
+        var todayStr = today.getFullYear() + '-' +
+          (today.getMonth()<9?'0':'') + (today.getMonth()+1) + '-' +
+          (today.getDate()<10?'0':'') + today.getDate();
+
+        var grid = document.getElementById('rrp-cal-grid');
+        var cells = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(function (d) {
+          return '<div class="rrp-cal-dow">' + d + '</div>';
+        }).join('');
+
+        // Empty cells before first day
+        for (var b = 0; b < firstDay; b++) {
+          cells += '<div class="rrp-cal-cell rrp-cal-empty"></div>';
+        }
+        for (var d = 1; d <= daysInMonth; d++) {
+          var mm = month + 1;
+          var dayStr = year + '-' + (mm<10?'0':'') + mm + '-' + (d<10?'0':'') + d;
+          var evs = byDay[dayStr] || [];
+          var cls = 'rrp-cal-cell';
+          if (dayStr === todayStr) cls += ' rrp-cal-today';
+          if (evs.length) cls += ' rrp-cal-has-events';
+          var evHtml = evs.map(function (ev) {
+            return '<div class="rrp-cal-event" data-sid="' + escapeHtml(ev.submissionId) + '" title="' +
+              escapeHtml((ev.stageName || '') + ': ' + (ev.title || ev.submissionId)) + '">' +
+              escapeHtml((ev.submissionId || '') + ' ' + (ev.stageName || '')) +
+            '</div>';
+          }).join('');
+          cells += '<div class="' + cls + '">' +
+            '<div class="rrp-cal-date">' + d + '</div>' +
+            evHtml +
+          '</div>';
+        }
+
+        grid.innerHTML = cells;
+
+        grid.querySelectorAll('.rrp-cal-event[data-sid]').forEach(function (el) {
+          el.addEventListener('click', function () {
+            renderSubmissionDetail(el.getAttribute('data-sid'), container, function () {
+              renderDeadlineCalendar(container, backFn);
+            });
+          });
+        });
+      }).catch(function () {
+        var g = document.getElementById('rrp-cal-grid');
+        if (g) g.innerHTML += '<div style="grid-column:1/-1;color:var(--rrp-error);">Failed to load events.</div>';
+      });
+    }
+
+    render(viewYear, viewMonth);
+  }
+
+  // ── Inactive Submissions (coordinator/admin) ───────────────────────────────
+  // Shows all non-terminal submissions with no audit log activity for N days.
+  // Supports individual and bulk cancellation with a required reason.
+  function renderInactiveSubmissions(container, backFn) {
+    var _activeDays = 30;
+
+    function load(days) {
+      _activeDays = days;
+      container.innerHTML =
+        '<h1>&#128683; Inactive Submissions</h1>' +
+        '<button type="button" class="rrp-btn secondary" style="margin-bottom:1rem;" id="rrp-inactive-back">&#8592; Back</button>' +
+        '<div class="rrp-dashboard-section">' +
+          '<p style="color:var(--rrp-text-muted);font-size:.9rem;">Submissions with no activity in the selected period. You may cancel them individually or in bulk.</p>' +
+          '<div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem;">' +
+            '<strong>Inactive for at least:</strong>' +
+            [30, 60, 90, 180].map(function (d) {
+              return '<button type="button" class="rrp-btn ' + (d === days ? '' : 'secondary') + '" data-days="' + d + '">' + d + ' days</button>';
+            }).join('') +
+          '</div>' +
+          '<div id="rrp-inactive-list"><p class="rrp-loading">Loading&hellip;</p></div>' +
+        '</div>';
+
+      document.getElementById('rrp-inactive-back').addEventListener('click', function () {
+        if (typeof backFn === 'function') backFn(); else renderSelection(container);
+      });
+      container.querySelectorAll('[data-days]').forEach(function (btn) {
+        btn.addEventListener('click', function () { load(parseInt(btn.getAttribute('data-days'), 10)); });
+      });
+
+      api('GET', '/submissions/inactive?days=' + days)
+        .then(function (res) {
+          var subs  = res.submissions || [];
+          var listEl = document.getElementById('rrp-inactive-list');
+          if (!listEl) return;
+
+          if (!subs.length) {
+            listEl.innerHTML = '<div class="rrp-empty-state"><p>No inactive submissions found for this period.</p></div>';
+            return;
+          }
+
+          listEl.innerHTML =
+            '<div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.75rem;">' +
+              '<label style="display:flex;align-items:center;gap:.35rem;cursor:pointer;">' +
+                '<input type="checkbox" id="rrp-inactive-select-all"> <strong>Select All (' + subs.length + ')</strong>' +
+              '</label>' +
+              '<button type="button" class="rrp-btn danger" id="rrp-bulk-cancel-btn" disabled>&#10060; Cancel Selected</button>' +
+              '<span id="rrp-bulk-cancel-msg" style="color:var(--rrp-text-muted);font-size:.88rem;margin-left:.25rem;"></span>' +
+            '</div>' +
+            '<ul class="rrp-list rrp-submissions-list">' +
+            subs.map(function (s) {
+              return '<li class="rrp-sub-item">' +
+                '<div style="display:flex;align-items:flex-start;gap:.5rem;">' +
+                  '<input type="checkbox" class="rrp-inactive-check" data-id="' + escapeHtml(s.id) + '" style="margin-top:.3rem;flex-shrink:0;">' +
+                  '<div style="flex:1;min-width:0;">' +
+                    '<div class="rrp-sub-item-header">' +
+                      '<strong>' + escapeHtml(s.title || 'Untitled') + '</strong>' +
+                      '<span class="rrp-decision-badge ' + statusBadgeCls(s.status) + '">' + escapeHtml(s.status || '—') + '</span>' +
+                    '</div>' +
+                    '<div class="rrp-sub-item-meta">' +
+                      '<span class="rrp-meta-id"><span class="rrp-meta-lbl">ID</span>' + escapeHtml(s.id) + '</span>' +
+                      '<span><span class="rrp-meta-lbl">Submitted by</span>' + escapeHtml(s.submitterName || s.submitterEmail || '\u2014') + '</span>' +
+                      '<span><span class="rrp-meta-lbl">Type</span>' + escapeHtml(typeLabel(s.submissionType || s.type)) + '</span>' +
+                      '<span><span class="rrp-meta-lbl">Last activity</span>' + (s._lastActivityAt ? new Date(s._lastActivityAt).toLocaleDateString() : '\u2014') + '</span>' +
+                      '<span style="color:#b45309;font-weight:600;"><span class="rrp-meta-lbl">Inactive</span>' + escapeHtml(String(s._daysSinceActivity || '?')) + ' days</span>' +
+                    '</div>' +
+                    '<div class="rrp-sub-item-actions">' +
+                      '<button type="button" class="rrp-btn secondary" data-inactive-detail="' + escapeHtml(s.id) + '">View</button>' +
+                      '<button type="button" class="rrp-btn danger" data-cancel-id="' + escapeHtml(s.id) + '" data-cancel-title="' + escapeHtml(s.title || 'Untitled') + '">&#10060; Cancel</button>' +
+                    '</div>' +
+                  '</div>' +
+                '</div>' +
+              '</li>';
+            }).join('') +
+            '</ul>';
+
+          // Select-all toggle
+          var selectAllChk = document.getElementById('rrp-inactive-select-all');
+          var bulkBtn      = document.getElementById('rrp-bulk-cancel-btn');
+          var msgEl        = document.getElementById('rrp-bulk-cancel-msg');
+
+          function updateBulkBtn() {
+            var checked = listEl.querySelectorAll('.rrp-inactive-check:checked');
+            bulkBtn.disabled = (checked.length === 0);
+            bulkBtn.textContent = checked.length > 0
+              ? '\u274C Cancel Selected (' + checked.length + ')'
+              : '\u274C Cancel Selected';
+          }
+
+          selectAllChk.addEventListener('change', function () {
+            listEl.querySelectorAll('.rrp-inactive-check').forEach(function (c) { c.checked = selectAllChk.checked; });
+            updateBulkBtn();
+          });
+          listEl.querySelectorAll('.rrp-inactive-check').forEach(function (c) {
+            c.addEventListener('change', function () { selectAllChk.checked = false; updateBulkBtn(); });
+          });
+
+          // Individual view
+          listEl.querySelectorAll('[data-inactive-detail]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              renderSubmissionDetail(btn.getAttribute('data-inactive-detail'), container, function () { renderInactiveSubmissions(container, backFn); });
+            });
+          });
+
+          // Individual cancel
+          listEl.querySelectorAll('[data-cancel-id]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var id    = btn.getAttribute('data-cancel-id');
+              var title = btn.getAttribute('data-cancel-title');
+              var reason = prompt('Cancel "' + title + '"?\n\nEnter a reason:');
+              if (reason === null) return;
+              reason = reason.trim();
+              if (!reason) { alert('A cancellation reason is required.'); return; }
+              if (!confirm('Confirm cancel: "' + title + '"?\nReason: ' + reason + '\n\nThis cannot be undone.')) return;
+              btn.disabled = true;
+              btn.textContent = 'Cancelling\u2026';
+              api('PATCH', '/submissions/' + encodeURIComponent(id), { action: 'cancel', reason: reason })
+                .then(function () { load(_activeDays); })
+                .catch(function (err) {
+                  btn.disabled = false;
+                  btn.textContent = '\u274C Cancel';
+                  alert('Cancel failed: ' + ((err.data && err.data.error) || 'Please try again.'));
+                });
+            });
+          });
+
+          // Bulk cancel
+          bulkBtn.addEventListener('click', function () {
+            var checked = Array.from(listEl.querySelectorAll('.rrp-inactive-check:checked')).map(function (c) { return c.getAttribute('data-id'); });
+            if (!checked.length) return;
+            var reason = prompt('Cancel ' + checked.length + ' submission(s)?\n\nEnter a reason for bulk cancellation:');
+            if (reason === null) return;
+            reason = reason.trim();
+            if (!reason) { alert('A cancellation reason is required.'); return; }
+            if (!confirm('Confirm bulk cancel of ' + checked.length + ' submission(s)?\nReason: ' + reason)) return;
+            bulkBtn.disabled = true;
+            bulkBtn.textContent = 'Cancelling\u2026';
+            api('POST', '/submissions/bulk-cancel', { ids: checked, reason: reason })
+              .then(function (r) {
+                msgEl.textContent = 'Done \u2014 Cancelled: ' + (r.cancelled || 0) + ', Skipped (already terminal): ' + (r.skipped || 0);
+                load(_activeDays);
+              })
+              .catch(function (err) {
+                bulkBtn.disabled = false;
+                updateBulkBtn();
+                msgEl.innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || 'Bulk cancel failed.') + '</span>';
+              });
+          });
+        })
+        .catch(function () {
+          var listEl = document.getElementById('rrp-inactive-list');
+          if (listEl) listEl.innerHTML = '<div class="rrp-error">Unable to load inactive submissions.</div>';
+        });
+    }
+
+    load(30);
   }
 
   // ── Multi-role dashboard switcher ─────────────────────────────────────────
@@ -2857,7 +4206,7 @@
       var hasRole = function(r) { return userRoles.indexOf(r) !== -1; };
 
       // Collect ALL portal roles the user holds (admin roles first, then others)
-      var allRoleOrder = ['Admin', 'Coordinator', 'Student', 'Reviewer', 'Faculty'];
+      var allRoleOrder = ['Admin', 'Coordinator', 'Student', 'Reviewer', 'Faculty', 'Public'];
       var allActiveRoles = allRoleOrder.filter(function(r) { return hasRole(r); });
 
       if (allActiveRoles.length > 1) {
@@ -2868,6 +4217,8 @@
       } else if (hasRole('Reviewer') || hasRole('Faculty')) {
         renderReviewerDashboard(el);
       } else if (hasRole('Student')) {
+        renderStudentDashboard(el);
+      } else if (hasRole('Public')) {
         renderStudentDashboard(el);
       } else {
         renderSelection(el);
@@ -3288,6 +4639,18 @@
               '<label class="rrp-label" style="margin-top:.75rem;">Description (optional)<br>' +
                 '<input type="text" class="rrp-input" id="rrp-st-desc" value="' + escapeHtml(isEdit ? (typeObj.description || '') : '') + '" placeholder="Brief description shown to users" />' +
               '</label>' +
+              '<label class="rrp-label" style="flex-direction:row;align-items:center;gap:.6rem;margin-top:.75rem;">' +
+                '<input type="checkbox" id="rrp-st-blind-review"' + (isEdit && typeObj.blindReview ? ' checked' : '') + '>' +
+                '<span>&#129693; <strong>Double-blind review</strong> <small style="font-weight:400;color:#6b7280;">&mdash; reviewers see &ldquo;Anonymous Author&rdquo;; submitter sees &ldquo;Reviewer 1, 2&hellip;&rdquo; until final decision is issued</small></span>' +
+              '</label>' +
+              '<label class="rrp-label" style="flex-direction:row;align-items:center;gap:.6rem;margin-top:.75rem;">' +
+                '<input type="checkbox" id="rrp-st-two-phase"' + (isEdit && typeObj.twoPhase ? ' checked' : '') + '>' +
+                '<span>&#128196; <strong>Two-phase submission</strong> <small style="font-weight:400;color:#6b7280;">&mdash; abstract submitted and reviewed first; submitter is invited to upload the full paper only after abstract approval</small></span>' +
+              '</label>' +
+              '<label class="rrp-label" style="margin-top:.5rem;display:flex;align-items:center;gap:.6rem;">' +
+                '<span style="white-space:nowrap;font-size:.88rem;color:#4b5563;">Abstract-only stages:</span>' +
+                '<input type="number" class="rrp-input" id="rrp-st-abstract-stages" min="1" max="10" value="' + (isEdit ? (typeObj.abstractOnlyStages || 1) : 1) + '" style="width:5rem;" />' +
+              '</label>' +
               '<div class="rrp-label" style="margin-top:.75rem;">Workflow Stages (in order)<br>' +
                 '<small style="color:#6b7280;">Select stages from the library and arrange them in order. Manage the stage library under Config &rarr; Workflow Stages.</small>' +
                 '<div style="margin-top:.4rem;" id="rrp-st-stages-wrap">' +
@@ -3334,6 +4697,9 @@
         var stageDaysPayload = readStageDays(stagesWrap);
         var payload = { id: idVal, label: labelVal, stages: stages };
         if (descVal) payload.description = descVal;
+        payload.blindReview = document.getElementById('rrp-st-blind-review').checked;
+        payload.twoPhase = document.getElementById('rrp-st-two-phase').checked;
+        payload.abstractOnlyStages = parseInt(document.getElementById('rrp-st-abstract-stages').value, 10) || 1;
 
         api('PATCH', '/submission-types/' + encodeURIComponent(idVal), payload)
           .then(function () {
@@ -3375,15 +4741,34 @@
     var _backFn = backFn || function () { renderCoordinatorDashboard(container); };
     var searchTerm = '';
     var roleFilter = initialRoleFilter || 'all';
-    var ROLE_SLUGS = ['rrp_student', 'rrp_reviewer', 'rrp_coordinator', 'rrp_admin', 'rrp_faculty'];
+    // Core roles as fallback; enriched from API before rendering
+    var ROLE_SLUGS = ['rrp_student', 'rrp_reviewer', 'rrp_coordinator', 'rrp_admin', 'rrp_faculty', 'rrp_public'];
     var ROLE_META  = {
-      rrp_student:     { label: 'Student',     color: '#3b82f6' },
-      rrp_reviewer:    { label: 'Reviewer',    color: '#8b5cf6' },
-      rrp_coordinator: { label: 'Coordinator', color: '#f59e0b' },
-      rrp_admin:       { label: 'Admin',       color: '#ef4444' },
-      rrp_faculty:     { label: 'Faculty',     color: '#10b981' }
+      rrp_student:     { label: 'Student',        color: '#3b82f6' },
+      rrp_reviewer:    { label: 'Reviewer',        color: '#8b5cf6' },
+      rrp_coordinator: { label: 'Coordinator',     color: '#f59e0b' },
+      rrp_admin:       { label: 'Admin',           color: '#ef4444' },
+      rrp_faculty:     { label: 'Faculty',         color: '#10b981' },
+      rrp_public:      { label: 'Public',          color: '#78716c' }
     };
     var _allUsers = [];
+
+    // Show a brief spinner, fetch roles from API, then render
+    container.innerHTML = '<p class="rrp-loading" style="padding:2rem;">Loading&hellip;</p>';
+    api('GET', '/admin/roles').then(function (res) {
+      (res.roles || []).forEach(function (r) {
+        if (!ROLE_META[r.slug]) {
+          ROLE_META[r.slug] = { label: r.label, color: r.color || '#6b7280' };
+        }
+        if (ROLE_SLUGS.indexOf(r.slug) === -1) {
+          ROLE_SLUGS.push(r.slug);
+        }
+      });
+    }).catch(function () {
+      // Silently fall back to core-only if the roles endpoint is unavailable
+    }).then(function () {
+      renderPage();
+    });
 
     function roleBadges(wpRoles) {
       return (wpRoles || []).map(function (r) {
@@ -3405,11 +4790,10 @@
           '<input type="search" id="rrp-users-search" class="rrp-input" placeholder="&#128269; Search name or email&hellip;" style="flex:1;min-width:180px;max-width:340px;">' +
           '<select id="rrp-users-role-filter" class="rrp-input" style="max-width:175px;">' +
             '<option value="all"' + (roleFilter === 'all' ? ' selected' : '') + '>All groups</option>' +
-            '<option value="rrp_student"' + (roleFilter === 'rrp_student' ? ' selected' : '') + '>Students</option>' +
-            '<option value="rrp_reviewer"' + (roleFilter === 'rrp_reviewer' ? ' selected' : '') + '>Reviewers</option>' +
-            '<option value="rrp_coordinator"' + (roleFilter === 'rrp_coordinator' ? ' selected' : '') + '>Coordinators</option>' +
-            '<option value="rrp_admin"' + (roleFilter === 'rrp_admin' ? ' selected' : '') + '>Admins</option>' +
-            '<option value="rrp_faculty"' + (roleFilter === 'rrp_faculty' ? ' selected' : '') + '>Faculty</option>' +
+            ROLE_SLUGS.map(function (slug) {
+              var m = ROLE_META[slug] || { label: slug };
+              return '<option value="' + escapeHtml(slug) + '"' + (roleFilter === slug ? ' selected' : '') + '>' + escapeHtml(m.label) + 's</option>';
+            }).join('') +
           '</select>' +
           '<span id="rrp-users-count" style="font-size:.85rem;color:var(--rrp-text-muted);white-space:nowrap;"></span>' +
         '</div>' +
@@ -3431,28 +4815,19 @@
     function loadAllUsers() {
       var listEl = document.getElementById('rrp-users-list');
       if (listEl) listEl.innerHTML = '<p class="rrp-loading">Loading users&hellip;</p>';
-      Promise.all([
-        api('GET', '/portal-users?role=student'),
-        api('GET', '/portal-users?role=reviewer'),
-        api('GET', '/portal-users?role=coordinator'),
-        api('GET', '/portal-users?role=admin'),
-        api('GET', '/portal-users?role=faculty')
-      ]).then(function (results) {
+      api('GET', '/portal-users').then(function (res) {
         var seen = {};
         _allUsers = [];
-        results.forEach(function (res, idx) {
-          var slug = ROLE_SLUGS[idx];
-          (res.users || []).forEach(function (u) {
-            if (u.jsonOnly) return;
-            if (seen[u.id]) {
-              if (seen[u.id].wpRoles.indexOf(slug) === -1) seen[u.id].wpRoles.push(slug);
-            } else {
-              var entry = JSON.parse(JSON.stringify(u));
-              if (!Array.isArray(entry.wpRoles) || entry.wpRoles.length === 0) entry.wpRoles = [slug];
-              seen[u.id] = entry;
-              _allUsers.push(entry);
+        (res.users || []).forEach(function (u) {
+          if (u.jsonOnly) return;
+          if (!seen[u.id]) {
+            seen[u.id] = true;
+            var entry = JSON.parse(JSON.stringify(u));
+            if (!Array.isArray(entry.wpRoles) || entry.wpRoles.length === 0) {
+              entry.wpRoles = entry.wpRole ? [entry.wpRole] : [];
             }
-          });
+            _allUsers.push(entry);
+          }
         });
         _allUsers.sort(function (a, b) { return (a.name || a.email).localeCompare(b.name || b.email); });
         applyFilter();
@@ -3485,14 +4860,19 @@
         '<div class="rrp-user-mgmt-table">' +
           '<div class="rrp-umr-head"><span>Name</span><span>Email</span><span>Groups</span><span>Actions</span></div>' +
           users.map(function (u) {
-            return '<div class="rrp-umr-row">' +
-              '<span class="rrp-umr-name"><strong>' + escapeHtml(u.name || u.email) + '</strong></span>' +
+            return '<div class="rrp-umr-row' + (u.locked ? ' rrp-user-locked' : '') + '">' +
+              '<span class="rrp-umr-name"><strong>' + escapeHtml(u.name || u.email) + '</strong>' +
+                (u.locked ? ' <span style="color:#ef4444;font-size:.73rem;font-weight:700;margin-left:.3rem;">&#128683; Locked</span>' : '') +
+              '</span>' +
               '<span class="rrp-umr-email">' + escapeHtml(u.email) + '</span>' +
               '<span>' + roleBadges(u.wpRoles) + '</span>' +
               '<span class="rrp-umr-actions">' +
                 '<button type="button" class="rrp-btn secondary small" data-up-edit="' + u.id + '">Edit</button> ' +
-                '<button type="button" class="rrp-btn secondary small" data-up-reset="' + u.id + '" title="Reset password">&#128274;</button> ' +
-                '<button type="button" class="rrp-btn danger small" data-up-remove="' + u.id + '">Remove</button>' +
+                '<button type="button" class="rrp-btn secondary small" data-up-reset="' + u.id + '" title="Reset password">&#128221; Reset PW</button> ' +
+                '<button type="button" class="rrp-btn ' + (u.locked ? 'secondary' : 'warning') + ' small" data-up-lock="' + u.id + '">' +
+                  (u.locked ? '&#128275; Unlock' : '&#128274; Lock') +
+                '</button> ' +
+                '<button type="button" class="rrp-btn danger small" data-up-remove="' + u.id + '">&#128465; Delete</button>' +
               '</span>' +
             '</div>';
           }).join('') +
@@ -3508,11 +4888,28 @@
         var user = _allUsers.find(function (u) { return String(u.id) === uid; });
         btn.addEventListener('click', function () { renderResetPwInline(user); });
       });
+      listEl.querySelectorAll('[data-up-lock]').forEach(function (btn) {
+        var uid  = btn.getAttribute('data-up-lock');
+        var user = _allUsers.find(function (u) { return String(u.id) === uid; });
+        btn.addEventListener('click', function () {
+          var willLock = !user.locked;
+          var msg = willLock
+            ? 'Lock account for ' + escapeHtml(user ? (user.name || user.email) : 'this user') + '?\n\nThey will be immediately signed out and will not be able to log in until unlocked.'
+            : 'Unlock account for ' + escapeHtml(user ? (user.name || user.email) : 'this user') + '?\n\nThey will be able to log in again.';
+          if (!confirm(msg)) return;
+          api('POST', '/portal-users/' + uid + '/lock', { locked: willLock })
+            .then(function () {
+              user.locked = willLock;
+              applyFilter();
+            })
+            .catch(function (err) { alert('Failed: ' + ((err && err.data && err.data.error) || 'Please try again.')); });
+        });
+      });
       listEl.querySelectorAll('[data-up-remove]').forEach(function (btn) {
         var uid  = btn.getAttribute('data-up-remove');
         var user = _allUsers.find(function (u) { return String(u.id) === uid; });
         btn.addEventListener('click', function () {
-          if (!confirm('Remove all portal access for ' + escapeHtml(user ? (user.name || user.email) : 'this user') + '?\n\nTheir submission history is preserved.')) return;
+          if (!confirm('Permanently delete account for ' + escapeHtml(user ? (user.name || user.email) : 'this user') + '?\n\nThis cannot be undone. Submission history is preserved.')) return;
           api('DELETE', '/portal-users/' + uid)
             .then(function () {
               _allUsers = _allUsers.filter(function (u) { return String(u.id) !== uid; });
@@ -3910,7 +5307,7 @@
           '<select id="umf-degree" class="rrp-input">' +
             '<option value="">&#8212; Select &#8212;</option>' +
             OB_DEGREE_SCHOOLS.map(function (sch) {
-              return '<optgroup label="School of ' + sch + '">' +
+              return '<optgroup label="School of ' + escapeHtml(sch) + '">' +
                 OB_DEGREES.filter(function (d) { return d.school === sch; }).map(function (d) {
                   return '<option value="' + escapeHtml(d.value) + '">' + escapeHtml(d.label) + '</option>';
                 }).join('') + '</optgroup>';
@@ -4008,7 +5405,7 @@
           '<select id="umf-degree" class="rrp-input">' +
             '<option value="">&#8212; Select &#8212;</option>' +
             OB_DEGREE_SCHOOLS.map(function (sch) {
-              return '<optgroup label="School of ' + sch + '">' +
+              return '<optgroup label="School of ' + escapeHtml(sch) + '">' +
                 OB_DEGREES.filter(function (d) { return d.school === sch; }).map(function (d) {
                   return '<option value="' + escapeHtml(d.value) + '"' + (user.degree === d.value ? ' selected' : '') + '>' + escapeHtml(d.label) + '</option>';
                 }).join('') + '</optgroup>';
@@ -5462,6 +6859,99 @@
           '</label>' +
         '</fieldset>' +
 
+        '<fieldset class="rrp-fieldset" style="margin-top:1.25rem;">' +
+          '<legend>Public Submissions</legend>' +
+          '<label class="rrp-label" style="flex-direction:row;align-items:center;gap:.6rem;">' +
+            '<input type="checkbox" id="rrp-pub-sub-toggle"' + ((rrpCfg.publicSubmissions && rrpCfg.publicSubmissions.enabled) ? ' checked' : '') + '>' +
+            '<span>Enable public self-registration and submission</span>' +
+          '</label>' +
+          '<small style="color:var(--rrp-text-muted);display:block;margin-top:.35rem;">When enabled, a \u201cRegister to Submit\u201d option appears on the portal login page and anyone can create a public account to submit documents.</small>' +
+          '<div id="rrp-pub-sub-fields" style="margin-top:1rem;' + ((rrpCfg.publicSubmissions && rrpCfg.publicSubmissions.enabled) ? '' : 'display:none;') + '">' +
+            '<label class="rrp-label" style="margin-bottom:.5rem;">Allowed Submission Types <small style="font-weight:400;">(public users may only submit the checked types)</small></label>' +
+            '<div id="rrp-pub-sub-types" style="display:flex;flex-wrap:wrap;gap:.5rem .75rem;margin-top:.35rem;">' +
+              _dynTypes.map(function (t) {
+                var checked = (rrpCfg.publicSubmissions && Array.isArray(rrpCfg.publicSubmissions.allowedTypes) && rrpCfg.publicSubmissions.allowedTypes.indexOf(t.id) !== -1) ? ' checked' : '';
+                return '<label style="display:flex;align-items:center;gap:.35rem;font-size:.9rem;">' +
+                  '<input type="checkbox" name="pub_sub_type" value="' + escapeHtml(t.id) + '"' + checked + '>' +
+                  escapeHtml(t.label) +
+                  '</label>';
+              }).join('') +
+            '</div>' +
+          '</div>' +
+        '</fieldset>' +
+
+        '<fieldset class="rrp-fieldset" style="margin-top:1.25rem;">' +
+          '<legend>&#128206; File Upload Limits</legend>' +
+          '<label class="rrp-label">Maximum File Size (MB)' +
+            '<input type="number" class="rrp-input" name="upload_max_size_mb" id="rrp-upload-max-size" value="' + (rrpCfg.uploadSettings ? (parseInt(rrpCfg.uploadSettings.maxFileSizeMb, 10) || 2) : 2) + '" min="1" max="50" style="max-width:100px;">' +
+            '<small style="color:var(--rrp-text-muted);">Maximum size per uploaded file (1\u201350 MB).</small>' +
+          '</label>' +
+          '<label class="rrp-label" style="margin-top:.75rem;">Maximum Files per Submission' +
+            '<input type="number" class="rrp-input" name="upload_max_files" id="rrp-upload-max-files" value="' + (rrpCfg.uploadSettings ? (parseInt(rrpCfg.uploadSettings.maxFiles, 10) || 5) : 5) + '" min="1" max="20" style="max-width:100px;">' +
+          '</label>' +
+          '<label class="rrp-label" style="margin-top:.75rem;">Allowed File Types <small style="font-weight:400;">(comma-separated extensions without dot, e.g. pdf,docx)</small>' +
+            '<input type="text" class="rrp-input" name="upload_allowed_exts" id="rrp-upload-allowed-exts" value="' + escapeHtml((rrpCfg.uploadSettings && Array.isArray(rrpCfg.uploadSettings.allowedExtensions) ? rrpCfg.uploadSettings.allowedExtensions.join(', ') : 'pdf, docx')) + '" maxlength="200" placeholder="pdf, docx">' +
+            '<small style="color:var(--rrp-text-muted);">Only these extensions will be accepted. Keep this list restrictive to prevent unsafe uploads.</small>' +
+          '</label>' +
+        '</fieldset>' +
+
+        '<fieldset class="rrp-fieldset" style="margin-top:1.25rem;">' +
+          '<legend>&#9729;&#65039; Automatic Cloud Backup</legend>' +
+          '<label class="rrp-label" style="flex-direction:row;align-items:center;gap:.6rem;">' +
+            '<input type="checkbox" id="rrp-auto-backup-toggle"' + (s.auto_backup_enabled ? ' checked' : '') + '>' +
+            '<span>Enable scheduled automatic backup to Azure Blob Storage</span>' +
+          '</label>' +
+          '<div id="rrp-azure-backup-fields" style="margin-top:1rem;' + (s.auto_backup_enabled ? '' : 'display:none;') + '">' +
+            '<label class="rrp-label" style="margin-bottom:.75rem;">Backup Schedule' +
+              '<select class="rrp-input" name="auto_backup_schedule">' +
+                '<option value="daily"'  + (s.auto_backup_schedule === 'daily'  ? ' selected' : '') + '>Daily</option>' +
+                '<option value="weekly"' + (s.auto_backup_schedule === 'weekly' ? ' selected' : '') + '>Weekly</option>' +
+              '</select>' +
+            '</label>' +
+            '<label class="rrp-label">Azure Blob Storage &mdash; Container SAS URL' +
+              '<input type="password" class="rrp-input" name="azure_blob_sas_url" value="" autocomplete="new-password" placeholder="' + (s.azure_blob_sas_url === '[encrypted]' ? 'Leave blank to keep current SAS URL' : 'https://account.blob.core.windows.net/container?sv=\u2026') + '">' +
+              '<small style="color:var(--rrp-text-muted);">Container SAS URL with <strong>write</strong> permission. Stored encrypted. Backups named <code>rrp-backup-YYYY-MM-DD.zip</code>.</small>' +
+            '</label>' +
+          '</div>' +
+        '</fieldset>' +
+
+        '<fieldset class="rrp-fieldset" style="margin-top:1.25rem;">' +
+          '<legend>&#128196; Plagiarism / Similarity Check</legend>' +
+          '<label class="rrp-label">Provider' +
+            '<select class="rrp-input" name="plagiarism_provider" id="rrp-plagiarism-provider">' +
+              '<option value="simulate"' + (s.plagiarism_provider === 'simulate' || !s.plagiarism_provider ? ' selected' : '') + '>Simulate (demo/testing)</option>' +
+              '<option value="core"'        + (s.plagiarism_provider === 'core'        ? ' selected' : '') + '>CORE API (open access)</option>' +
+              '<option value="turnitin"'    + (s.plagiarism_provider === 'turnitin'    ? ' selected' : '') + '>Turnitin</option>' +
+              '<option value="ithenticate"' + (s.plagiarism_provider === 'ithenticate' ? ' selected' : '') + '>iThenticate</option>' +
+              '<option value="none"'        + (s.plagiarism_provider === 'none'        ? ' selected' : '') + '>Disabled</option>' +
+            '</select>' +
+          '</label>' +
+          // CORE fields
+          '<div id="rrp-plag-core" style="' + (s.plagiarism_provider === 'core' ? '' : 'display:none;') + 'margin-top:.75rem;">' +
+            '<label class="rrp-label">API Key <small style="font-weight:400;">(CORE API key from core.ac.uk)</small>' +
+              '<input type="password" class="rrp-input" name="plagiarism_api_key" value="" autocomplete="new-password" placeholder="' + (s.plagiarism_api_key ? 'Leave blank to keep current key' : 'Enter CORE API key') + '">' +
+            '</label>' +
+          '</div>' +
+          // Turnitin fields
+          '<div id="rrp-plag-turnitin" style="' + (s.plagiarism_provider === 'turnitin' ? '' : 'display:none;') + 'margin-top:.75rem;">' +
+            '<label class="rrp-label">Turnitin Base URL <small style="font-weight:400;">(region endpoint, e.g. https://api.turnitin.com)</small>' +
+              '<input type="url" class="rrp-input" name="turnitin_api_url" value="' + escapeHtml(s.turnitin_api_url || 'https://api.turnitin.com') + '" placeholder="https://api.turnitin.com">' +
+            '</label>' +
+            '<label class="rrp-label" style="margin-top:.5rem;">Integration Key <small style="font-weight:400;">(Turnitin v3 integration key)</small>' +
+              '<input type="password" class="rrp-input" name="turnitin_api_key" value="" autocomplete="new-password" placeholder="' + (s.turnitin_api_key ? 'Leave blank to keep current key' : 'Enter Turnitin integration key') + '">' +
+            '</label>' +
+          '</div>' +
+          // iThenticate fields
+          '<div id="rrp-plag-ithenticate" style="' + (s.plagiarism_provider === 'ithenticate' ? '' : 'display:none;') + 'margin-top:.75rem;">' +
+            '<label class="rrp-label">iThenticate Base URL <small style="font-weight:400;">(e.g. https://app.ithenticate.com)</small>' +
+              '<input type="url" class="rrp-input" name="ithenticate_api_url" value="' + escapeHtml(s.ithenticate_api_url || 'https://app.ithenticate.com') + '" placeholder="https://app.ithenticate.com">' +
+            '</label>' +
+            '<label class="rrp-label" style="margin-top:.5rem;">API Key <small style="font-weight:400;">(iThenticate v2 API key)</small>' +
+              '<input type="password" class="rrp-input" name="ithenticate_api_key" value="" autocomplete="new-password" placeholder="' + (s.ithenticate_api_key ? 'Leave blank to keep current key' : 'Enter iThenticate API key') + '">' +
+            '</label>' +
+          '</div>' +
+        '</fieldset>' +
+
         '<div style="display:flex;gap:.75rem;align-items:center;margin-top:1.5rem;">' +
           '<button type="submit" class="rrp-btn" id="rrp-settings-save">&#128190; Save Settings</button>' +
           '<span id="rrp-settings-msg"></span>' +
@@ -5485,6 +6975,26 @@
       document.getElementById('rrp-smtp-auth-toggle').addEventListener('change', function () {
         document.getElementById('rrp-smtp-auth-fields').style.display = this.checked ? '' : 'none';
       });
+      // Public submissions toggle
+      document.getElementById('rrp-pub-sub-toggle').addEventListener('change', function () {
+        document.getElementById('rrp-pub-sub-fields').style.display = this.checked ? '' : 'none';
+      });
+      // Auto backup toggle
+      document.getElementById('rrp-auto-backup-toggle').addEventListener('change', function () {
+        document.getElementById('rrp-azure-backup-fields').style.display = this.checked ? '' : 'none';
+      });
+      // Plagiarism provider show/hide
+      (function () {
+        function showPlagFields(val) {
+          document.getElementById('rrp-plag-core').style.display        = val === 'core'        ? '' : 'none';
+          document.getElementById('rrp-plag-turnitin').style.display    = val === 'turnitin'    ? '' : 'none';
+          document.getElementById('rrp-plag-ithenticate').style.display = val === 'ithenticate' ? '' : 'none';
+        }
+        document.getElementById('rrp-plagiarism-provider').addEventListener('change', function () {
+          showPlagFields(this.value);
+        });
+      })();
+
       // Send test email
       document.getElementById('rrp-smtp-test-btn').addEventListener('click', function () {
         var msgEl = document.getElementById('rrp-smtp-test-msg');
@@ -5539,15 +7049,50 @@
         // Only send SMTP password if user typed a new one
         var smtpPass = (fd.get('smtp_password') || '').trim();
         if (smtpPass) payload.smtp_password = smtpPass;
+        // Auto-backup settings
+        payload.auto_backup_enabled  = document.getElementById('rrp-auto-backup-toggle').checked;
+        payload.auto_backup_schedule = fd.get('auto_backup_schedule') || 'daily';
+        var azureSas = (fd.get('azure_blob_sas_url') || '').trim();
+        if (azureSas) payload.azure_blob_sas_url = azureSas;
+        // Plagiarism settings
+        payload.plagiarism_provider = fd.get('plagiarism_provider') || 'simulate';
+        var plagKey = (fd.get('plagiarism_api_key') || '').trim();
+        if (plagKey) payload.plagiarism_api_key = plagKey;
+        // Turnitin settings
+        var tUrl = (fd.get('turnitin_api_url') || '').trim();
+        if (tUrl) payload.turnitin_api_url = tUrl;
+        var tKey = (fd.get('turnitin_api_key') || '').trim();
+        if (tKey) payload.turnitin_api_key = tKey;
+        // iThenticate settings
+        var iUrl = (fd.get('ithenticate_api_url') || '').trim();
+        if (iUrl) payload.ithenticate_api_url = iUrl;
+        var iKey = (fd.get('ithenticate_api_key') || '').trim();
+        if (iKey) payload.ithenticate_api_key = iKey;
 
         // Collect deadline options
         var holidaysRaw = (fd.get('deadline_holidays') || '').split('\n').map(function (d) { return d.trim(); }).filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d); });
+        // Collect public submission allowed types
+        var pubSubEnabled = document.getElementById('rrp-pub-sub-toggle').checked;
+        var pubSubTypes   = Array.from(document.querySelectorAll('input[name="pub_sub_type"]:checked')).map(function (cb) { return cb.value; });
+        // Collect upload settings
+        var uploadAllowedExts = (fd.get('upload_allowed_exts') || 'pdf,docx')
+          .split(',').map(function (e) { return e.trim().toLowerCase().replace(/^\./, ''); }).filter(Boolean);
+        if (!uploadAllowedExts.length) uploadAllowedExts = ['pdf', 'docx'];
         var deadlinePayload = {
           deadlineOptions: {
             skipWeekends:    document.getElementById('rrp-deadline-skip-weekends').checked,
             gracePeriodDays: Math.max(0, parseInt(fd.get('deadline_grace_days') || '2', 10)),
             publicHolidays:  holidaysRaw,
-          }
+          },
+          publicSubmissions: {
+            enabled:      pubSubEnabled,
+            allowedTypes: pubSubTypes,
+          },
+          uploadSettings: {
+            maxFileSizeMb:      Math.min(50, Math.max(1, parseInt(fd.get('upload_max_size_mb') || '2', 10))),
+            maxFiles:           Math.min(20, Math.max(1, parseInt(fd.get('upload_max_files')   || '5', 10))),
+            allowedExtensions:  uploadAllowedExts,
+          },
         };
 
         Promise.all([
@@ -5573,6 +7118,432 @@
   }
 
   // ── Audit Log modal ──────────────────────────────────────────────────────
+  // ── Administration Panel (Backup / Restore / Archive) ─────────────────────
+  function renderAdminPanel(container, backFn, initialTab) {
+    var activeTab = initialTab || 'backup';
+
+    function render() {
+      container.innerHTML =
+        '<div class="rrp-mgmt-page-header">' +
+          '<button type="button" class="rrp-btn secondary" id="rrp-admin-panel-back">&#8592; Back</button>' +
+          '<h1>&#128737; Administration</h1>' +
+        '</div>' +
+        '<div class="rrp-tabs" style="margin-bottom:1.5rem;">' +
+          '<button class="rrp-tab' + (activeTab === 'backup'  ? ' rrp-tab-active' : '') + '" data-admin-tab="backup">&#128230; Backup &amp; Restore</button>' +
+          '<button class="rrp-tab' + (activeTab === 'archive' ? ' rrp-tab-active' : '') + '" data-admin-tab="archive">&#128196; Data Archive</button>' +
+          '<button class="rrp-tab' + (activeTab === 'roles'   ? ' rrp-tab-active' : '') + '" data-admin-tab="roles">&#127775; Role Management</button>' +
+        '</div>' +
+        '<div id="rrp-admin-tab-body"></div>';
+
+      document.getElementById('rrp-admin-panel-back').addEventListener('click', function () {
+        if (backFn) backFn(); else renderCoordinatorDashboard(container);
+      });
+      container.querySelectorAll('[data-admin-tab]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          activeTab = btn.getAttribute('data-admin-tab');
+          container.querySelectorAll('[data-admin-tab]').forEach(function (b) {
+            b.classList.toggle('rrp-tab-active', b.getAttribute('data-admin-tab') === activeTab);
+          });
+          renderTab();
+        });
+      });
+      renderTab();
+    }
+
+    function renderTab() {
+      var body = document.getElementById('rrp-admin-tab-body');
+      if (!body) return;
+      if (activeTab === 'backup') renderBackupTab(body);
+      else if (activeTab === 'roles') renderRolesTab(body);
+      else renderArchiveTab(body);
+    }
+
+    // ── Backup & Restore tab ───────────────────────────────────────────────
+    function renderBackupTab(body) {
+      body.innerHTML =
+        '<div class="rrp-admin-cards">' +
+
+          '<div class="rrp-admin-card">' +
+            '<div class="rrp-admin-card-icon">&#128230;</div>' +
+            '<div class="rrp-admin-card-body">' +
+              '<h3>Download Backup</h3>' +
+              '<p>Creates a ZIP archive containing all data files (submissions, config, reviewers) and all uploaded documents.</p>' +
+              '<button type="button" class="rrp-btn" id="rrp-backup-dl-btn">&#8681; Download Backup</button>' +
+              '<span id="rrp-backup-dl-msg" style="margin-left:.75rem;"></span>' +
+            '</div>' +
+          '</div>' +
+
+          '<div class="rrp-admin-card">' +
+            '<div class="rrp-admin-card-icon">&#9100;</div>' +
+            '<div class="rrp-admin-card-body">' +
+              '<h3>Restore from Backup</h3>' +
+              '<p style="color:#b45309;"><strong>&#9888; Warning:</strong> Restoring will overwrite all current data with the contents of the selected backup ZIP. This action cannot be undone.</p>' +
+              '<label class="rrp-label" style="margin-bottom:.75rem;">' +
+                'Select backup ZIP file<br>' +
+                '<input type="file" id="rrp-restore-file" accept=".zip" style="margin-top:.4rem;">' +
+              '</label>' +
+              '<button type="button" class="rrp-btn danger" id="rrp-restore-btn" disabled>&#9100; Restore Backup</button>' +
+              '<span id="rrp-restore-msg" style="margin-left:.75rem;"></span>' +
+            '</div>' +
+          '</div>' +
+
+          '<div class="rrp-admin-card">' +
+            '<div class="rrp-admin-card-icon">&#9729;&#65039;</div>' +
+            '<div class="rrp-admin-card-body">' +
+              '<h3>Automatic Cloud Backup</h3>' +
+              '<div id="rrp-auto-backup-status-area"><p class="rrp-loading">Loading\u2026</p></div>' +
+              '<div style="margin-top:.75rem;display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;">' +
+                '<button type="button" class="rrp-btn secondary" id="rrp-auto-backup-trigger-btn">&#9654; Trigger Backup Now</button>' +
+                '<span id="rrp-auto-backup-trigger-msg"></span>' +
+              '</div>' +
+              '<p style="font-size:.83rem;color:var(--rrp-text-muted);margin-top:.5rem;">Configure in <strong>Portal Settings &#8594; Automatic Cloud Backup</strong>.</p>' +
+            '</div>' +
+          '</div>' +
+
+        '</div>';
+
+      // Download backup
+      document.getElementById('rrp-backup-dl-btn').addEventListener('click', function () {
+        var btn = document.getElementById('rrp-backup-dl-btn');
+        var msg = document.getElementById('rrp-backup-dl-msg');
+        btn.disabled = true;
+        btn.textContent = 'Generating\u2026';
+        msg.innerHTML = '<span class="rrp-loading">Please wait, this may take a moment\u2026</span>';
+        api('GET', '/admin/backup')
+          .then(function (res) {
+            var blob = new Blob([_b64ToBytes(res.content)], { type: 'application/zip' });
+            var url  = URL.createObjectURL(blob);
+            var a    = document.createElement('a');
+            a.href     = url;
+            a.download = res.filename || 'rrp-backup.zip';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function () { URL.revokeObjectURL(url); a.parentNode.removeChild(a); }, 1000);
+            btn.disabled = false;
+            btn.textContent = '\u2B07 Download Backup';
+            msg.innerHTML = '<span class="rrp-success">Backup downloaded: ' + escapeHtml(res.filename) + '</span>';
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            btn.textContent = '\u2B07 Download Backup';
+            msg.innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || 'Backup failed.') + '</span>';
+          });
+      });
+
+      // Enable restore button when file selected
+      var fileInput = document.getElementById('rrp-restore-file');
+      fileInput.addEventListener('change', function () {
+        document.getElementById('rrp-restore-btn').disabled = !fileInput.files.length;
+      });
+
+      document.getElementById('rrp-restore-btn').addEventListener('click', function () {
+        var file = fileInput.files[0];
+        if (!file) return;
+        if (!confirm('Restore from "' + file.name + '"?\n\nALL CURRENT DATA WILL BE OVERWRITTEN. Continue?')) return;
+        var btn = document.getElementById('rrp-restore-btn');
+        var msg = document.getElementById('rrp-restore-msg');
+        btn.disabled = true;
+        msg.innerHTML = '<span class="rrp-loading">Restoring\u2026</span>';
+        var fd = new FormData();
+        fd.append('backup', file);
+        fetch(restBase + '/admin/restore', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'X-WP-Nonce': nonce },
+          body: fd
+        }).then(function (r) { return r.json().then(function (d) {
+          if (!r.ok) throw d;
+          btn.disabled = false;
+          msg.innerHTML = '<span class="rrp-success">' + escapeHtml(d.message || 'Restore complete.') + '</span>';
+        }); }).catch(function (err) {
+          btn.disabled = false;
+          msg.innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || (err.message) || 'Restore failed.') + '</span>';
+        });
+      });
+
+      // ── Auto-backup card
+      api('GET', '/admin/auto-backup/status').then(function (st) {
+        var html = '';
+        if (!st.enabled) {
+          html = '<p style="color:var(--rrp-text-muted);">&#128683; Auto backup is <strong>disabled</strong>. Enable it in Portal Settings.</p>';
+        } else if (!st.configured) {
+          html = '<p style="color:#b45309;">&#9888; Enabled but Azure Blob SAS URL is not configured. Add it in Portal Settings.</p>';
+        } else {
+          html = '<p>&#9989; Enabled &middot; Schedule: <strong>' + escapeHtml(st.schedule) + '</strong>.</p>';
+          if (st.lastBackup) {
+            var lb = st.lastBackup;
+            html += lb.success
+              ? '<p>Last: <span class="rrp-success">&#10003; ' + escapeHtml(lb.filename || '') + '</span> &middot; ' + new Date(lb.at).toLocaleString() + ' (' + Math.round((lb.size || 0) / 1024) + '\u202fKB)</p>'
+              : '<p>Last: <span class="rrp-error">&#10007; Failed</span> &mdash; ' + escapeHtml(lb.error || '') + '</p>';
+          }
+          if (st.nextBackup) {
+            html += '<p>&#128197; Next: ' + new Date(st.nextBackup).toLocaleString() + '</p>';
+          }
+        }
+        var el = document.getElementById('rrp-auto-backup-status-area');
+        if (el) el.innerHTML = html;
+      }).catch(function () {
+        var el = document.getElementById('rrp-auto-backup-status-area');
+        if (el) el.innerHTML = '<p class="rrp-error">Unable to load backup status.</p>';
+      });
+
+      var abBtn = document.getElementById('rrp-auto-backup-trigger-btn');
+      if (abBtn) {
+        abBtn.addEventListener('click', function () {
+          var msg2 = document.getElementById('rrp-auto-backup-trigger-msg');
+          abBtn.disabled = true; abBtn.textContent = 'Running\u2026';
+          if (msg2) msg2.innerHTML = '<span class="rrp-loading">Uploading to Azure\u2026</span>';
+          api('POST', '/admin/auto-backup/trigger')
+            .then(function (res) {
+              abBtn.disabled = false; abBtn.textContent = '\u25b6 Trigger Backup Now';
+              if (msg2) msg2.innerHTML = '<span class="rrp-success">&#10003; ' + escapeHtml(res.filename || 'Done') + ' (' + Math.round((res.size || 0) / 1024) + '\u202fKB)</span>';
+            })
+            .catch(function (err) {
+              abBtn.disabled = false; abBtn.textContent = '\u25b6 Trigger Backup Now';
+              if (msg2) msg2.innerHTML = '<span class="rrp-error">&#10007; ' + escapeHtml((err && err.data && err.data.error) || 'Backup failed.') + '</span>';
+            });
+        });
+      }
+    }
+
+    // ── Archive tab ─────────────────────────────────────────────────────────
+    function renderArchiveTab(body) {
+      body.innerHTML =
+        '<div class="rrp-admin-cards">' +
+          '<div class="rrp-admin-card">' +
+            '<div class="rrp-admin-card-icon">&#128218;</div>' +
+            '<div class="rrp-admin-card-body">' +
+              '<h3>Archive Old Submissions</h3>' +
+              '<p>Moves <strong>terminal</strong> submissions (Approved, Rejected, Withdrawn, Cancelled, Published) older than the selected age into a compressed archive ZIP. Their data and uploaded files are preserved in the archive and removed from the active dataset.</p>' +
+              '<div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:.75rem;">' +
+                '<label class="rrp-label" style="flex:0 0 auto;">' +
+                  'Archive submissions older than' +
+                  '<select class="rrp-input" id="rrp-archive-age" style="margin-top:.3rem;">' +
+                    '<option value="365">1 year</option>' +
+                    '<option value="730">2 years</option>' +
+                    '<option value="1095">3 years</option>' +
+                    '<option value="1825">5 years</option>' +
+                  '</select>' +
+                '</label>' +
+                '<label class="rrp-label" style="flex:1;min-width:220px;">' +
+                  'Reason / Notes' +
+                  '<input type="text" class="rrp-input" id="rrp-archive-reason" placeholder="e.g. Annual data retention archival" style="margin-top:.3rem;">' +
+                '</label>' +
+              '</div>' +
+              '<button type="button" class="rrp-btn" id="rrp-archive-run-btn">&#128218; Run Archive</button>' +
+              '<span id="rrp-archive-run-msg" style="margin-left:.75rem;"></span>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<h3 style="margin:1.5rem 0 .5rem;">Stored Archives</h3>' +
+        '<div id="rrp-archives-list"><p class="rrp-loading">Loading\u2026</p></div>';
+
+      loadArchiveList();
+
+      document.getElementById('rrp-archive-run-btn').addEventListener('click', function () {
+        var days   = parseInt(document.getElementById('rrp-archive-age').value, 10);
+        var reason = document.getElementById('rrp-archive-reason').value.trim() || 'Routine archival';
+        if (!confirm('Archive all terminal submissions older than ' + days + ' days?\n\nThey will be removed from active data and stored in a ZIP archive. This cannot be undone.')) return;
+        var btn = document.getElementById('rrp-archive-run-btn');
+        var msg = document.getElementById('rrp-archive-run-msg');
+        btn.disabled = true;
+        msg.innerHTML = '<span class="rrp-loading">Archiving\u2026</span>';
+        api('POST', '/admin/archive-submissions', { olderThanDays: days, reason: reason })
+          .then(function (res) {
+            btn.disabled = false;
+            msg.innerHTML = '<span class="rrp-success">' + escapeHtml(res.message || 'Done.') + '</span>';
+            loadArchiveList();
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            msg.innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || 'Archive failed.') + '</span>';
+          });
+      });
+    }
+
+    function loadArchiveList() {
+      var listEl = document.getElementById('rrp-archives-list');
+      if (!listEl) return;
+      api('GET', '/admin/archives')
+        .then(function (res) {
+          var archives = res.archives || [];
+          if (!archives.length) {
+            listEl.innerHTML = '<p style="color:var(--rrp-text-muted);">No archives yet.</p>';
+            return;
+          }
+          listEl.innerHTML =
+            '<ul class="rrp-list">' +
+            archives.map(function (a) {
+              var sizeKb = a.size ? (a.size / 1024).toFixed(1) + '\u00a0KB' : '\u2014';
+              var date   = a.createdAt ? new Date(a.createdAt).toLocaleString() : '\u2014';
+              return '<li class="rrp-sub-item" style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;">' +
+                '<div style="flex:1;min-width:0;">' +
+                  '<strong>' + escapeHtml(a.name) + '</strong>' +
+                  '<div style="font-size:.83rem;color:var(--rrp-text-muted);margin-top:.15rem;">' +
+                    escapeHtml(a.criteria || '') +
+                    (a.submissionCount ? ' &middot; ' + a.submissionCount + ' submission(s)' : '') +
+                    ' &middot; ' + escapeHtml(sizeKb) +
+                    ' &middot; ' + escapeHtml(date) +
+                  '</div>' +
+                '</div>' +
+                '<div style="display:flex;gap:.4rem;flex-shrink:0;">' +
+                  '<button type="button" class="rrp-btn secondary" data-dl-archive="' + escapeHtml(a.name) + '">&#8681; Download</button>' +
+                  '<button type="button" class="rrp-btn danger" data-del-archive="' + escapeHtml(a.name) + '">&#128465; Delete</button>' +
+                '</div>' +
+              '</li>';
+            }).join('') +
+            '</ul>';
+
+          listEl.querySelectorAll('[data-dl-archive]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var name = btn.getAttribute('data-dl-archive');
+              btn.disabled = true;
+              btn.textContent = 'Downloading\u2026';
+              api('GET', '/admin/archives/' + encodeURIComponent(name) + '/download')
+                .then(function (res) {
+                  var blob = new Blob([_b64ToBytes(res.content)], { type: 'application/zip' });
+                  var url  = URL.createObjectURL(blob);
+                  var a    = document.createElement('a');
+                  a.href = url; a.download = res.filename || name;
+                  document.body.appendChild(a); a.click();
+                  setTimeout(function () { URL.revokeObjectURL(url); a.parentNode.removeChild(a); }, 1000);
+                  btn.disabled = false; btn.textContent = '\u2B07 Download';
+                })
+                .catch(function () { btn.disabled = false; btn.textContent = '\u2B07 Download'; alert('Download failed.'); });
+            });
+          });
+
+          listEl.querySelectorAll('[data-del-archive]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var name = btn.getAttribute('data-del-archive');
+              if (!confirm('Permanently delete archive "' + name + '"?\n\nThis cannot be undone.')) return;
+              api('DELETE', '/admin/archives/' + encodeURIComponent(name))
+                .then(function () { loadArchiveList(); })
+                .catch(function (err) { alert('Delete failed: ' + ((err.data && err.data.error) || 'Please try again.')); });
+            });
+          });
+        })
+        .catch(function () {
+          if (listEl) listEl.innerHTML = '<div class="rrp-error">Failed to load archives.</div>';
+        });
+    }
+
+    // ── Role Management tab ──────────────────────────────────────────────────
+    function renderRolesTab(body) {
+      body.innerHTML = '<p class="rrp-loading">Loading roles&hellip;</p>';
+
+      function reload() {
+        body.innerHTML = '<p class="rrp-loading">Loading roles&hellip;</p>';
+        api('GET', '/admin/roles').then(function (res) {
+          var roles = res.roles || [];
+          body.innerHTML =
+            '<div style="max-width:680px;">' +
+              '<p style="color:var(--rrp-text-muted);margin-bottom:1rem;">Core roles are built-in and cannot be removed. Custom roles can be assigned to users just like core roles.</p>' +
+              '<table style="width:100%;border-collapse:collapse;margin-bottom:1.5rem;" id="rrp-roles-table">' +
+                '<thead><tr style="text-align:left;border-bottom:2px solid var(--rrp-border,#dee2e6);">' +
+                  '<th style="padding:.4rem .6rem;">Role Name</th>' +
+                  '<th style="padding:.4rem .6rem;">Slug</th>' +
+                  '<th style="padding:.4rem .6rem;">Type</th>' +
+                  '<th style="padding:.4rem .6rem;"></th>' +
+                '</tr></thead>' +
+                '<tbody>' +
+                roles.map(function (r) {
+                  var badge = r.type === 'core'
+                    ? '<span style="background:#e5e7eb;color:#374151;padding:.15rem .5rem;border-radius:9999px;font-size:.78rem;">Core</span>'
+                    : '<span style="background:#dbeafe;color:#1d4ed8;padding:.15rem .5rem;border-radius:9999px;font-size:.78rem;">Custom</span>';
+                  var dot = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + escapeHtml(r.color || '#6b7280') + ';margin-right:.4rem;vertical-align:middle;"></span>';
+                  var del = r.type === 'custom'
+                    ? '<button type="button" class="rrp-btn danger small" data-del-role="' + escapeHtml(r.slug) + '" title="Delete role">&#128465;</button>'
+                    : '<span style="color:var(--rrp-text-muted);font-size:.8rem;">&#128274;</span>';
+                  return '<tr style="border-bottom:1px solid var(--rrp-border,#dee2e6);">' +
+                    '<td style="padding:.5rem .6rem;">' + dot + escapeHtml(r.label) + '</td>' +
+                    '<td style="padding:.5rem .6rem;font-family:monospace;font-size:.85rem;color:var(--rrp-text-muted);">' + escapeHtml(r.slug) + '</td>' +
+                    '<td style="padding:.5rem .6rem;">' + badge + '</td>' +
+                    '<td style="padding:.5rem .6rem;">' + del + '</td>' +
+                  '</tr>';
+                }).join('') +
+                '</tbody>' +
+              '</table>' +
+
+              '<div class="rrp-analytics-card" style="max-width:420px;">' +
+                '<h3 style="margin:0 0 .75rem;font-size:1rem;">&#43; Add Custom Role</h3>' +
+                '<div class="rrp-form-group">' +
+                  '<label>Role Name <em>*</em></label>' +
+                  '<input type="text" id="rrp-role-name" class="rrp-input" placeholder="e.g. External Reviewer">' +
+                  '<small style="color:var(--rrp-text-muted);">Slug will be auto-generated: <code id="rrp-role-slug-preview">rrp_&hellip;</code></small>' +
+                '</div>' +
+                '<div id="rrp-role-add-msg" style="min-height:1.2rem;margin:.3rem 0;"></div>' +
+                '<button type="button" class="rrp-btn" id="rrp-role-add-btn">&#10003; Add Role</button>' +
+              '</div>' +
+            '</div>';
+
+          // Delete buttons
+          body.querySelectorAll('[data-del-role]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var slug = btn.getAttribute('data-del-role');
+              if (!confirm('Delete the "' + slug + '" role?\n\nUsers currently assigned this role will have it removed.')) return;
+              btn.disabled = true;
+              api('DELETE', '/admin/roles/' + encodeURIComponent(slug))
+                .then(function () { reload(); })
+                .catch(function (err) {
+                  btn.disabled = false;
+                  alert('Delete failed: ' + ((err.data && err.data.error) || 'Please try again.'));
+                });
+            });
+          });
+
+          // Slug preview
+          var nameInput = body.querySelector('#rrp-role-name');
+          var preview   = body.querySelector('#rrp-role-slug-preview');
+          if (nameInput && preview) {
+            nameInput.addEventListener('input', function () {
+              var slug = 'rrp_' + this.value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+              preview.textContent = slug || 'rrp_\u2026';
+            });
+          }
+
+          // Add Role
+          var addBtn = body.querySelector('#rrp-role-add-btn');
+          var msgEl  = body.querySelector('#rrp-role-add-msg');
+          if (addBtn) {
+            addBtn.addEventListener('click', function () {
+              var name = (nameInput ? nameInput.value.trim() : '');
+              if (!name) { msgEl.innerHTML = '<span class="rrp-error">Role name is required.</span>'; return; }
+              addBtn.disabled = true;
+              addBtn.textContent = 'Adding\u2026';
+              msgEl.innerHTML = '';
+              api('POST', '/admin/roles', { name: name })
+                .then(function () {
+                  if (nameInput) nameInput.value = '';
+                  if (preview) preview.textContent = 'rrp_\u2026';
+                  reload();
+                })
+                .catch(function (err) {
+                  addBtn.disabled = false;
+                  addBtn.textContent = '\u2713 Add Role';
+                  msgEl.innerHTML = '<span class="rrp-error">' + escapeHtml((err.data && err.data.error) || 'Failed to add role.') + '</span>';
+                });
+            });
+          }
+        }).catch(function () {
+          body.innerHTML = '<div class="rrp-error">Failed to load roles.</div>';
+        });
+      }
+
+      reload();
+    }
+
+    render();
+  }
+
+  // Helper: decode a base64 string to a Uint8Array (for Blob construction)
+  function _b64ToBytes(b64) {
+    var bin = atob(b64);
+    var arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr;
+  }
+
   function openAuditLogModal(subId) {
     var existing = document.getElementById('rrp-audit-modal');
     if (existing) existing.remove();

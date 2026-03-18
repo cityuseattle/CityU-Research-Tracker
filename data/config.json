@@ -114,5 +114,15 @@
     "skipWeekends": true,
     "gracePeriodDays": 2,
     "publicHolidays": []
+  },
+  "customRoles": [],
+  "publicSubmissions": {
+    "enabled": false,
+    "allowedTypes": []
+  },
+  "uploadSettings": {
+    "maxFileSizeMb": 2,
+    "maxFiles": 5,
+    "allowedExtensions": ["pdf", "docx"]
   }
 }

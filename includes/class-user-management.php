@@ -70,6 +70,15 @@ class RRP_User_Management {
 				'rrp_view_all_submissions'      => true,
 			),
 		),
+		'rrp_public'      => array(
+			'name'         => 'Public Submitter',
+			'capabilities' => array(
+				'read'                      => true,
+				'rrp_submit_research'       => true,
+				'rrp_view_own_submissions'  => true,
+				'rrp_edit_own_submissions'  => true,
+			),
+		),
 	);
 
 	/**
@@ -107,6 +116,28 @@ class RRP_User_Management {
 	);
 
 	/**
+	 * Return custom roles stored in config.json.
+	 * Each entry: [ 'slug' => '...', 'name' => '...', 'color' => '...' ]
+	 */
+	public static function get_custom_roles() {
+		if ( ! defined( 'RRP_DATA_DIR' ) ) {
+			return array();
+		}
+		$path = RRP_DATA_DIR . 'config.json';
+		if ( ! file_exists( $path ) ) {
+			return array();
+		}
+		$raw = file_get_contents( $path );
+		if ( substr( $raw, 0, 3 ) === "\xEF\xBB\xBF" ) {
+			$raw = substr( $raw, 3 );
+		}
+		$data = json_decode( $raw, true );
+		return ( is_array( $data ) && isset( $data['customRoles'] ) && is_array( $data['customRoles'] ) )
+			? $data['customRoles']
+			: array();
+	}
+
+	/**
 	 * Initialize user management system
 	 */
 	public static function init() {
@@ -123,10 +154,18 @@ class RRP_User_Management {
 	 * Create custom roles and capabilities
 	 */
 	public static function create_roles() {
-		// Create any missing roles (idempotent) without early return
+		// Create any missing core roles (idempotent)
 		foreach ( self::ROLES as $role_slug => $role_data ) {
 			if ( ! get_role( $role_slug ) ) {
 				add_role( $role_slug, $role_data['name'], $role_data['capabilities'] );
+			}
+		}
+		// Register any custom roles stored in config.json
+		foreach ( self::get_custom_roles() as $custom ) {
+			$slug = isset( $custom['slug'] ) ? sanitize_key( (string) $custom['slug'] ) : '';
+			$name = isset( $custom['name'] ) ? (string) $custom['name'] : $slug;
+			if ( $slug && ! get_role( $slug ) ) {
+				add_role( $slug, $name, array( 'read' => true ) );
 			}
 		}
 
@@ -534,7 +573,13 @@ class RRP_User_Management {
 		if ( ! $user ) {
 			return array();
 		}
-		return array_values( array_intersect( array_keys( self::ROLES ), $user->roles ) );
+		$all_slugs = array_keys( self::ROLES );
+		foreach ( self::get_custom_roles() as $c ) {
+			if ( ! empty( $c['slug'] ) ) {
+				$all_slugs[] = sanitize_key( (string) $c['slug'] );
+			}
+		}
+		return array_values( array_intersect( $all_slugs, $user->roles ) );
 	}
 
 	/**
@@ -553,8 +598,15 @@ class RRP_User_Management {
 			'rrp_faculty'     => 'Faculty',
 			'rrp_coordinator' => 'Coordinator',
 			'rrp_admin'       => 'Admin',
+			'rrp_public'      => 'Public',
 			'administrator'   => 'Admin',
 		);
+		// Include custom role labels
+		foreach ( self::get_custom_roles() as $c ) {
+			if ( ! empty( $c['slug'] ) && ! empty( $c['name'] ) ) {
+				$map[ sanitize_key( (string) $c['slug'] ) ] = (string) $c['name'];
+			}
+		}
 		$labels = array();
 		foreach ( $map as $slug => $label ) {
 			if ( in_array( $slug, $user_roles, true ) && ! in_array( $label, $labels, true ) ) {

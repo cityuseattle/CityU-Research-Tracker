@@ -12,7 +12,8 @@ class Portal_Data {
 
 	const SUBMISSIONS_FILE = 'submissions.json';
 	const REVIEWERS_FILE   = 'reviewers.json';
-	const CONFIG_FILE     = 'config.json';
+	const CONFIG_FILE      = 'config.json';
+	const WEBHOOKS_FILE    = 'webhooks.json';
 
 	const WITHDRAWABLE = array(
 		'Submitted - Awaiting Review',
@@ -95,6 +96,13 @@ class Portal_Data {
 	/** Sanitize filename for storage (match Node sanitizeFilename). */
 	public static function sanitize_filename( $name ) {
 		$name = $name ? preg_replace( '/[^a-zA-Z0-9._-]/', '_', $name ) : 'file';
+		// Strip consecutive dots to prevent path traversal sequences (e.g. ../ )
+		$name = preg_replace( '/\.{2,}/', '_', $name );
+		// Strip leading dots (hidden file prevention)
+		$name = ltrim( $name, '.' );
+		if ( $name === '' || $name === '_' ) {
+			$name = 'file';
+		}
 		return substr( $name, 0, 100 );
 	}
 
@@ -358,6 +366,21 @@ class Portal_Data {
 		file_put_contents( RRP_DATA_DIR . self::CONFIG_FILE, wp_json_encode( $config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ), LOCK_EX );
 	}
 
+	public static function read_webhooks(): array {
+		$path = RRP_DATA_DIR . self::WEBHOOKS_FILE;
+		if ( ! file_exists( $path ) ) {
+			return array();
+		}
+		$raw  = file_get_contents( $path );
+		$data = json_decode( $raw, true );
+		return is_array( $data ) ? $data : array();
+	}
+
+	public static function write_webhooks( array $webhooks ): void {
+		self::ensure_data_dir();
+		file_put_contents( RRP_DATA_DIR . self::WEBHOOKS_FILE, wp_json_encode( $webhooks, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ), LOCK_EX );
+	}
+
 	public static function select_from_pool( $config, $type, $count, $exclude_ids, $advance_round_robin = false ) {
 		$pools   = $config['reviewerPools'] ?? array();
 		$cohorts = $config['poolCohorts'] ?? array();
@@ -381,7 +404,13 @@ class Portal_Data {
 		if ( $mode === 'fixed' ) {
 			$selected = array_slice( $pool_ids, 0, $count );
 		} elseif ( $mode === 'random' ) {
-			shuffle( $pool_ids );
+			// F16: Use cryptographically secure shuffle (Fisher-Yates with random_int)
+			for ( $i = count( $pool_ids ) - 1; $i > 0; $i-- ) {
+				$j              = random_int( 0, $i );
+				$tmp            = $pool_ids[ $i ];
+				$pool_ids[ $i ] = $pool_ids[ $j ];
+				$pool_ids[ $j ] = $tmp;
+			}
 			$selected = array_slice( $pool_ids, 0, $count );
 		} else {
 			$len   = count( $pool_ids );
@@ -517,7 +546,7 @@ class Portal_Data {
 		$stages = isset( $submission['reviewStages'] ) && is_array( $submission['reviewStages'] ) ? $submission['reviewStages'] : array();
 
 		// Preserved terminal statuses — do not override.
-		$preserved = array( 'Draft', 'Withdrawn' );
+		$preserved = array( 'Draft', 'Withdrawn', 'Cancelled', 'Full Paper Invited', 'Appeal Pending', 'Appeal Under Review' );
 		if ( in_array( $status, $preserved, true ) ) {
 			return $status;
 		}
@@ -715,6 +744,7 @@ class Portal_Data {
 			'averageTimeToDecisionDays' => null,
 			'finalizedCount' => 0,
 			'inProgressCount' => 0,
+			'withdrawnCancelledCount' => 0,
 			'pendingCount' => 0,
 			'lateReviewAlerts' => 0,
 		);
@@ -728,12 +758,15 @@ class Portal_Data {
 			$finalized_statuses = array( 'Confirmed for Presentation', 'Published', 'Approved for Submission', 'Approved', 'Accepted' );
 			$in_progress_statuses = array( 'Submitted', 'Under Review', 'Under Initial Review', 'Administrative Review', 'Revision Required', 'Revision Submitted' );
 			$is_finalized   = in_array( $status, $finalized_statuses, true );
-			$is_in_progress = ! $is_finalized && ( in_array( $status, $in_progress_statuses, true ) || strpos( $status, ': In Progress' ) !== false );
+			$is_withdrawn_cancelled = in_array( $status, array( 'Withdrawn', 'Cancelled' ), true );
+			$is_in_progress = ! $is_finalized && ! $is_withdrawn_cancelled && ( in_array( $status, $in_progress_statuses, true ) || strpos( $status, ': In Progress' ) !== false );
 			if ( $is_finalized ) {
 				$metrics['finalizedCount']++;
 				if ( $createdAt ) {
 					$timeDiffs[] = ( $now - $createdAt ) / DAY_IN_SECONDS;
 				}
+			} elseif ( $is_withdrawn_cancelled ) {
+				$metrics['withdrawnCancelledCount']++;
 			} elseif ( $is_in_progress ) {
 				$metrics['inProgressCount']++;
 				if ( $createdAt && ( $now - $createdAt ) > ( 14 * DAY_IN_SECONDS ) ) {

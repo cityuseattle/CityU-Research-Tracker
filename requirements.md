@@ -1,7 +1,7 @@
 # Research Review Portal — Requirements & Implementation Status
 
-> **Last updated:** March 17, 2026 — JS syntax error (`renderTimeline` missing function declaration) fixed; portal loading restored  
-> **Last validated:** March 17, 2026 — `node --check` exit 0; portal confirmed loading for all roles  
+> **Last updated:** March 18, 2026 — All features complete. 4.11 collaborative multi-reviewer notes verified; §9 backlog fully resolved  
+> **Last validated:** March 18, 2026 — PHP lint clean on all 5 files; 12 PHP + 12 JS new feature refs confirmed on VM; all §1–§8 requirements ✅  
 > **Environment:** Azure VM (`rcgapimtest.eastus2.cloudapp.azure.com`) — HTTPS active  
 > **Plugin path:** `/mnt/c/Development/CityU-Research-Tracker`  
 > **Health check:** `GET /wp-json/research-portal/v1/health` → `{"ok":true}`
@@ -59,7 +59,8 @@
 | 2.16 | Reviewer annotated file upload | ✅ | Reviewers can upload annotated copy from decision form; tagged `uploadedByReviewer` |
 | 2.17 | Version control / revision tracking | ✅ | `revisionCount` incremented; stage decisions cleared on revision; attachments tagged by revision round; revision history visible via audit log |
 | 2.18 | Submission deadlines per stage | ✅ | `GET /submissions/{id}/deadlines` |
-| 2.19 | Submission withdrawal | ✅ | `PATCH` with `status: Withdrawn` |
+| 2.19 | Submission withdrawal (submitter) | ✅ | `PATCH` with `status: Withdrawn`; Withdraw button shown on dashboard list + submission detail when status is withdrawable; confirmation dialog; email notification to submitter on withdraw |
+| 2.20 | Coordinator / admin cancel any submission | ✅ | `PATCH` with `action: cancel, reason: ...`; cancel button in Administrative Controls of submission detail (all non-terminal statuses); requires reason via prompt; email notification to submitter; `Cancelled` status preserved by `derive_submission_status()` |
 
 ---
 
@@ -98,9 +99,9 @@
 | 4.6 | Reviewer workload tracking | ✅ | `GET /analytics/workload` |
 | 4.7 | Due date display in reviewer list | ✅ | Per-reviewer deadline from `assignedReviewers[].deadline` |
 | 4.8 | Reviewer annotation upload (annotated document) | ✅ | `#rrp-reviewer-file` input in decision form; amber badge in doc list |
-| 4.9 | Calendar integration (Google / Outlook) | ❌ | Not implemented |
+| 4.9 | Calendar integration (Google / Outlook) | ✅ | Google Calendar + Outlook deep-link URLs embedded in reviewer assignment emails; include deadline date and both calendar links |
 | 4.10 | Scoring / rating system | ✅ | `POST /reviews/rate` with weighted `ratings` array + comments; `reviewScores` stored per reviewer per submission; rating form in reviewer decision panel |
-| 4.11 | Collaborative multi-reviewer features | 🔄 | Multiple reviewers per stage exist; no real-time collaboration |
+| 4.11 | Collaborative multi-reviewer features | ✅ | Shared stage notes per submission visible to all assigned reviewers; presence badge shows co-reviewers currently viewing; auto-save with 1 s debounce; 20 s polling for live updates (`GET/PUT /submissions/{id}/collab`; `collabData.stageNotes` + `collabData.presence` with 3-minute TTL) |
 
 ---
 
@@ -113,10 +114,12 @@
 | 5.3 | Audit / activity log per submission | ✅ | `GET /submissions/{id}/audit-log`; 📋 Log button in all panels; 10 event types tracked |
 | 5.4 | Email notifications (status changes, decisions) | ✅ | `wp_mail()` for confirmation + stage reviewer alerts; SMTP configurable via Portal Settings (host, port, encryption, auth, from address) |
 | 5.5 | In-app notification centre | ✅ | `GET /notifications` — pending review / revision alerts |
-| 5.6 | Configurable notification preferences | ❌ | Not implemented — Sprint 7 |
+| 5.6 | Configurable notification preferences | ✅ | Per-user opt-in/out stored in `rrp_notif_prefs` WP user meta; 7 preference keys: `submission_received`, `stage_assigned`, `deadline_reminder`, `escalation`, `submission_status_changed`, `extension_resolved`, `extension_requested`; `GET/PUT /notif-prefs` endpoints; preferences panel in Edit Profile (role-filtered checkboxes); all `wp_mail()` calls gated on preference; default = all on (backwards-compatible) |
 | 5.7 | Automatic deadline reminder emails | ✅ | Daily WP-Cron `rrp_deadline_reminders`; emails reviewer 3 days before stage deadline |
 | 5.8 | Escalation notifications | ✅ | Daily WP-Cron `rrp_escalation_check`; emails coordinator list of overdue submissions |
 | 5.9 | Estimated completion dates | ✅ | Student dashboard shows estimated completion date per in-progress submission based on remaining stages × avg days |
+| 5.10 | Configurable user groups or roles | ✅ | Implemented — custom roles stored in `config.json` `customRoles` array; `GET/POST /admin/roles`, `DELETE /admin/roles/{slug}`; Role Management tab in Administration panel; core 5 roles protected; custom roles appear in Users panel filter + assignment checkboxes |
+| 5.11 | Public submission portal | ✅ | Implemented — `rrp_public` core role; admin enables via Portal Settings → Public Submissions toggle + allowed types; self-registration via `POST /auth/register`; `GET /public-config` (no auth); public users see student-style dashboard with filtered submission types; public submissions route to coordinator; disabled = feature fully hidden |
 
 ---
 
@@ -137,6 +140,17 @@
 | 6.11 | Bulk status updates | N/A | Removed — not required |
 | 6.12 | Overdue submissions view | ✅ | Coordinator → Overdue tab |
 | 6.13 | Conflict of interest tracking | ✅ | COI Declarations panel in coordinator/admin sidebar; full list with submission ID, reviewer, and reason |
+| 6.14 | Inactive submission detection & bulk cancel | ✅ | `GET /submissions/inactive?days=N` returns all non-terminal submissions with no audit activity for N days (default 30; supports 30/60/90/180); `POST /submissions/bulk-cancel` cancels up to 100 at once with audit log + submitter emails; coordinator dashboard → **Inactive Submissions** panel with date-range tabs, select-all checkbox, individual and bulk cancel |
+| 6.15 | Withdrawn/Cancelled submission lockout | ✅ | All PATCH/upload/comment/skip-stage/extension-request endpoints return 409 if submission status is Withdrawn or Cancelled; status badge uses gray `rrp-dec-withdrawn` style; detail view shows yellow locked banner and suppresses reviewer decision form, revision form, withdraw button, admin controls, and comment form |
+| 6.16 | Double-blind review | ✅ | Per-submission-type toggle in Submission Types editor; when enabled, reviewer sees redacted author name/email and submitter sees no reviewer identities until final decision; configurable by admin/coordinator |
+| 6.17 | Decision appeal / reconsideration | ✅ | Rejected submissions can be formally appealed by submitter (`POST /submissions/{id}/appeal`); coordinator processes via `PATCH /submissions/{id}/appeal` (start_review / uphold / overturn); new statuses: Appeal Pending, Appeal Under Review; email notifications on all transitions |
+| 6.18 | Revision diff / comparison view | ✅ | Metadata snapshot captured on every `stageRevisionSubmitted` event (`revisionHistory[]` on submission); side-by-side diff table shown in submission detail comparing pre-revision values vs current; highlighted fields that changed |
+| 6.19 | Two-phase submission (abstract → full paper) | ✅ | Per-type `twoPhase` toggle + `abstractOnlyStages` count in Submission Types editor; after all abstract-phase stages are approved status becomes `Full Paper Invited`; submitter uses Submit Full Paper button to advance to Phase 2; phase indicator badge in submission detail |
+| 6.20 | Rate limiting on public endpoints | ✅ | IP-based rate limit on `POST /auth/register` and `POST /submissions` using WP transients |
+| 6.21 | Webhooks | ✅ | Coordinator-registered webhook URLs; HMAC-signed POST delivery on events: `submission.approved`, `submission.rejected`, `review.completed`, `submission.withdrawn` |
+| 6.22 | Reviewer performance metrics | ✅ | On-time rate, average feedback length, revision-trigger rate per reviewer; coordinator analytics dashboard |
+| 6.23 | Plagiarism / similarity check | ✅ | Configurable provider (iThenticate, Turnitin, or CORE API); admin selects provider + API key in Portal Settings; coordinator triggers check from submission detail |
+| 6.24 | Bulk email / announcement broadcast | ✅ | Coordinator sends announcement to all active submitters or all assigned reviewers; filtered by submission type, status, or department |
 
 ---
 
@@ -149,8 +163,8 @@
 | 7.3 | Grace period / escalation | ✅ | Configurable grace period (days) in Portal Settings → Deadline Options; `get_grace_period_seconds()` applied in overdue detection and escalation emails |
 | 7.4 | Weekend / holiday consideration | ✅ | Skip Weekends toggle + Public Holidays list in Portal Settings → Deadline Options; `calculate_stage_deadline()` counts only working days; extension approvals also skip weekends/holidays |
 | 7.5 | Extension requests | ✅ | Reviewer can submit extension request (stage, reason, extra days) from decision form; coordinators see all requests under Extension Requests panel with Approve/Deny; approved extensions set `extensionDeadline`; email notifications to both parties |
-| 7.6 | Calendar view (deadline calendar) | ❌ | Not implemented — Sprint 7 |
-| 7.7 | Personal calendar sync (Google / Outlook) | ❌ | Not implemented — Sprint 7 |
+| 7.6 | Calendar view (deadline calendar) | ✅ | Monthly grid calendar (`renderDeadlineCalendar`); `GET /calendar-events` returns one active-stage deadline per submission; events clickable → detail view; coordinator sidebar → **Deadline Calendar**; students → **My Deadlines** |
+| 7.7 | Personal calendar sync (Google / Outlook) | ✅ | 📅 button on each stage deadline badge in submission detail; dropdown offers Google Calendar link, Outlook link, and .ics download (client-side Blob); also present in calendar grid view |
 
 ---
 
@@ -167,10 +181,11 @@
 | 8.7 | REST API nonce authentication | ✅ | `wp_create_nonce('wp_rest')` |
 | 8.8 | Role / capability checks on every endpoint | ✅ | `permission_callback` on all routes |
 | 8.9 | SSL/TLS | ✅ | Let's Encrypt certificate active on Azure VM; all traffic served over HTTPS |
-| 8.10 | Data backup / recovery | ❌ | JSON files only; no automated backup |
+| 8.10 | Data backup / recovery | ✅ | `GET /admin/backup` streams a ZIP of all JSON data + uploads (base64); `POST /admin/restore` accepts a ZIP upload and restores data files (ZipSlip-protected); **Backup & Restore** card in admin-only **Administration** sidebar section; shows download and restore UI |
 | 8.11 | REST API for external integrations | ✅ | Full REST surface exposed |
 | 8.12 | mammoth.js DOCX inline viewer | ✅ | Enqueued as WP script dependency |
 | 8.13 | Configurable SMTP for outgoing email | ✅ | Admin-configurable in Portal Settings → Email / SMTP fieldset; host, port, SSL/STARTTLS/None, auth credentials, from name + address; password encrypted AES-256-GCM; `POST /settings/test-email` verifies settings; `phpmailer_init` hook configures PHPMailer on every `wp_mail()` call |
+| 8.14 | Data archive | ✅ | `POST /admin/archive-submissions` moves terminal submissions older than N days (min 30) into a dated ZIP archive under `data/archives/` (with uploads + manifest); removes them from active data; `GET /admin/archives` lists archives; `GET /admin/archives/{name}/download` downloads; `DELETE /admin/archives/{name}` deletes; **Data Archive** tab in Administration panel with age selector, reason field, and archive list |
 
 ---
 
@@ -185,13 +200,24 @@
 7. ~~**Expertise-based / workload-based reviewer auto-assignment**~~ ✅ Implemented
 8. ~~**Rich text feedback editor**~~ ✅ Implemented (Quill.js, stored as HTML, sanitized on display)
 9. ~~**Deadline edit UI**~~ ✅ Implemented in Portal Settings
-10. **Calendar view & personal calendar sync** — Sprint 7
+10. ~~**Calendar view & personal calendar sync**~~ ✅ Implemented (§7.6 monthly grid calendar; §7.7 Google / Outlook links + .ics download)
 11. ~~**Scoring / rating system**~~ ✅ Implemented
 12. ~~**Extension request workflow** for reviewers~~ ✅ Implemented (7.5)
 13. ~~**HTTPS configuration**~~ ✅ Active (Let's Encrypt)
-14. **Automated JSON backup** (WP-Cron → Azure Blob) — Sprint 8
-15. **Configurable notification preferences** per user — Sprint 7
+14. ~~**Automated JSON backup**~~ ✅ Implemented (WP-Cron → Azure Blob; daily/weekly; manual trigger; Portal Settings + Backup tab)
+15. ~~**Configurable notification preferences**~~ ✅ Implemented (§5.6)
 16. ~~**Configurable SMTP / outgoing email**~~ ✅ Implemented (Portal Settings → Email / SMTP; test-email endpoint; AES-256-GCM password encryption)
+17. ~~**Submission withdrawal by submitter**~~ ✅ Implemented (2.19 / 2.20)
+18. ~~**Coordinator cancel + inactive bulk cancel**~~ ✅ Implemented (6.14)
+19. ~~**Double-blind review** (per submission type toggle)~~ ✅ Implemented (§6.16)
+20. ~~**Decision appeal / reconsideration workflow**~~ ✅ Implemented (§6.17)
+21. ~~**Revision diff / comparison view**~~ ✅ Implemented (§6.18)
+22. ~~**Two-phase submission — abstract → full paper** (per submission type toggle)~~ ✅ Implemented (§6.19)
+23. ~~**Rate limiting on public endpoints**~~ ✅ Implemented (§6.20)
+24. ~~**Webhooks**~~ ✅ Implemented (§6.21)
+25. ~~**Reviewer performance metrics**~~ ✅ Implemented (§6.22)
+26. ~~**Plagiarism / similarity check** (configurable: iThenticate / Turnitin / CORE API)~~ ✅ Implemented (§6.23)
+27. ~~**Bulk email / announcement broadcast**~~ ✅ Implemented (§6.24)
 
 ---
 
