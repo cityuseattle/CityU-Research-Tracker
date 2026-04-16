@@ -19,6 +19,7 @@ define( 'RRP_DATA_DIR', RRP_PLUGIN_DIR . 'data/' );
 define( 'RRP_UPLOADS_DIR', RRP_DATA_DIR . 'uploads/' );
 
 require_once RRP_PLUGIN_DIR . 'includes/class-portal-data.php';
+require_once RRP_PLUGIN_DIR . 'includes/class-workflow-engine.php';
 require_once RRP_PLUGIN_DIR . 'includes/class-portal-rest.php';
 require_once RRP_PLUGIN_DIR . 'includes/class-portal-settings.php';
 require_once RRP_PLUGIN_DIR . 'includes/class-user-management.php';

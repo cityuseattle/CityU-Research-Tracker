@@ -237,6 +237,12 @@ class Portal_REST {
 			'permission_callback' => array( __CLASS__, 'can_manage_config' ),
 			'args'                => array( 'id' => array( 'required' => true ) ),
 		) );
+		// Workflow schema — static options for the workflow engine editor
+		register_rest_route( self::NAMESPACE, '/config/workflow-schema', array(
+			'methods'             => 'GET',
+			'callback'            => array( __CLASS__, 'workflow_schema_get' ),
+			'permission_callback' => array( __CLASS__, 'can_view_config' ),
+		) );
 		// Workflow Stages library CRUD
 		register_rest_route( self::NAMESPACE, '/workflow-stages', array(
 			'methods'             => 'GET',
@@ -478,6 +484,12 @@ class Portal_REST {
 			'callback'            => array( __CLASS__, 'admin_role_delete' ),
 			'permission_callback' => array( __CLASS__, 'is_full_admin' ),
 			'args'                => array( 'slug' => array( 'required' => true ) ),
+		) );
+		// Phase 6 migration: one-time stamp of currentRound on legacy submissions
+		register_rest_route( self::NAMESPACE, '/admin/migrate/stamp-rounds', array(
+			'methods'             => 'POST',
+			'callback'            => array( __CLASS__, 'migration_stamp_rounds' ),
+			'permission_callback' => array( __CLASS__, 'is_full_admin' ),
 		) );
 
 		// Notification preferences (self-service: each user manages their own)
@@ -1613,6 +1625,7 @@ class Portal_REST {
 				'type'               => $s['type'] ?? null,
 				'submissionType'     => $s['submissionType'] ?? null,
 				'status'             => $s['status'] ?? null,
+				'workflowStatusClass' => self::status_to_badge_class( (string) ( $s['status'] ?? '' ) ),
 				'title'              => $s['title'] ?? null,
 				'submitterEmail'     => $s['submitterEmail'] ?? null,
 				'submitterName'      => $s['submitterName'] ?? null,
@@ -1732,10 +1745,13 @@ class Portal_REST {
 			$_gr_email       = strtolower( trim( (string) $_gr_user->user_email ) );
 			$_gr_roles       = (array) $_gr_user->roles;
 			$_gr_is_admin    = (bool) array_intersect( $_gr_roles, array( 'rrp_admin', 'rrp_coordinator', 'administrator', 'rrp_faculty' ) );
-			$_gr_is_gk       = self::is_gatekeeper( $sub, $_gr_email );
-			$_gr_is_submitter = strtolower( trim( (string) ( $sub['submitterEmail'] ?? '' ) ) ) === $_gr_email;
+			$_wf_sub          = Workflow_Engine::get_workflow_for_submission( $sub );
+			$_viewer_role     = Workflow_Engine::compute_viewer_role( $sub, $_gr_email, $_gr_is_admin, $_wf_sub ?? array() );
+			$sub['viewerRole'] = $_viewer_role;
+			$_gr_is_gk        = $_viewer_role === 'gatekeeper';
+			$_gr_is_submitter = $_viewer_role === 'submitter';
 
-			if ( $_gr_is_admin ) {
+			if ( $_viewer_role === 'admin' ) {
 				// Admins / coordinators see everything; mark so UI knows to show full log
 				$sub['isGatedReviewAdmin'] = true;
 			} elseif ( $_gr_is_gk ) {
@@ -1760,12 +1776,13 @@ class Portal_REST {
 					foreach ( $sub['reviewStages'] as $_gri => &$_grs ) {
 						$_grs_reviewers = $_grs['reviewers'] ?? array();
 						$_grs_decisions = is_array( $_grs['decisions'] ?? null ) ? $_grs['decisions'] : array();
-						// Stage 0: mark as completed/forwarded if gatekeeper approved
-						if ( $_gri === 0 && Portal_Data::is_stage_approved( $_grs ) ) {
+						// Gatekeeper stage: mark as completed/forwarded if approved
+						$_gk_idx_for_student = $_wf_sub ? Workflow_Engine::gatekeeper_stage_index( $_wf_sub ) : 0;
+						if ( $_gri === $_gk_idx_for_student && Portal_Data::is_stage_approved( $_grs, $sub, $_gri ) ) {
 							$_grs['stageCompleted'] = true;
 						}
 						// Higher stages: set gatekeeperNotifiedAt dynamically if all reviewers decided but flag not stored
-						if ( $_gri > 0 && empty( $_grs['gatekeeperNotifiedAt'] ) && ! empty( $_grs_reviewers ) ) {
+						if ( $_gri > $_gk_idx_for_student && empty( $_grs['gatekeeperNotifiedAt'] ) && ! empty( $_grs_reviewers ) ) {
 							$_all_dec = true;
 							foreach ( $_grs_reviewers as $_grs_rv ) {
 								$_grs_ek = strtolower( trim( (string) ( $_grs_rv['email'] ?? '' ) ) );
@@ -1816,6 +1833,174 @@ class Portal_REST {
 				}
 			}
 		}
+
+		// ── Phase 4: server-computed stage metadata ─────────────────────────────────
+		$_p4_wf         = Workflow_Engine::get_workflow_for_submission( $sub );
+		$_p4_vr         = $sub['viewerRole'] ?? 'public';
+		$_p4_is_sub     = $_p4_vr === 'submitter';
+		$_p4_is_gk      = $_p4_vr === 'gatekeeper';
+		$_p4_is_comm    = in_array( $_p4_vr, array( 'committee', 'advisory' ), true );
+		$_p4_gk_idx     = $_p4_wf ? Workflow_Engine::gatekeeper_stage_index( $_p4_wf ) : 0;
+		$_p4_stages     = $sub['reviewStages'] ?? array();
+		$_p4_sub_status = $sub['status'] ?? '';
+
+		// Active stage index — for students use stageCompleted/gatekeeperNotifiedAt (decisions stripped)
+		$_p4_active = -1;
+		foreach ( $_p4_stages as $_p4i => $_p4s ) {
+			if ( $_p4s['skipped'] ?? false ) continue;
+			$_p4_revs = $_p4s['reviewers'] ?? array();
+			if ( empty( $_p4_revs ) ) { $_p4_active = $_p4i; break; }
+			if ( $_p4_is_sub ) {
+				$_p4_stage_done = ! empty( $_p4s['stageCompleted'] ) || ! empty( $_p4s['gatekeeperNotifiedAt'] );
+				if ( ! $_p4_stage_done ) { $_p4_active = $_p4i; break; }
+			} else {
+				if ( ! Portal_Data::is_stage_approved( $_p4s, $sub, $_p4i ) ) { $_p4_active = $_p4i; break; }
+			}
+		}
+
+		// Build computedStages[]
+		$_p4_cs = array();
+		foreach ( $_p4_stages as $_p4i => $_p4s ) {
+			$_p4_approved = ! $_p4_is_sub && Portal_Data::is_stage_approved( $_p4s, $sub, $_p4i );
+			$_p4_skipped  = (bool) ( $_p4s['skipped'] ?? false );
+			$_p4_decs_raw = $_p4s['decisions'] ?? array();
+			$_p4_has_rev  = array_filter( $_p4_decs_raw, function ( $d ) { return strtolower( (string) $d ) === 'needs revision'; } );
+			$_p4_is_gk_s  = ( $_p4i === $_p4_gk_idx );
+			$_p4_future   = ! $_p4_skipped && ! $_p4_approved && $_p4_active !== -1 && $_p4i > $_p4_active;
+			// Default status labels
+			if ( $_p4_skipped )                { $_p4_sc = 'rrp-stage-skipped';     $_p4_sl = 'Skipped'; }
+			elseif ( $_p4_approved )           { $_p4_sc = 'rrp-stage-approved';    $_p4_sl = "\u2713 Approved"; }
+			elseif ( $_p4_future )             { $_p4_sc = 'rrp-stage-not-started'; $_p4_sl = 'Not Started'; }
+			elseif ( ! empty( $_p4_has_rev ) ) { $_p4_sc = 'rrp-stage-revision';    $_p4_sl = 'Revision Requested'; }
+			else                               { $_p4_sc = 'rrp-stage-pending';     $_p4_sl = 'In Progress'; }
+			// Role-specific gated overrides
+			if ( ! empty( $sub['gatedReview'] ) ) {
+				if ( $_p4_is_comm && $_p4_is_gk_s && $_p4_approved ) {
+					$_p4_sc = 'rrp-stage-approved'; $_p4_sl = "\u2713 Review Complete";
+				} elseif ( $_p4_is_gk && $_p4_is_gk_s && $_p4_approved ) {
+					$_p4_gk_rels  = $sub['gatedReleases'] ?? array();
+					$_p4_last_rel = ! empty( $_p4_gk_rels ) ? end( $_p4_gk_rels ) : null;
+					$_p4_rel_cur  = false;
+					if ( $_p4_last_rel ) {
+						if ( isset( $_p4_last_rel['round'] ) ) {
+							$_p4_rel_cur = (int) $_p4_last_rel['round'] >= (int) ( $sub['currentRound'] ?? 0 );
+						} else {
+							$_p4_rel_ts  = (int) strtotime( (string) ( $_p4_last_rel['releasedAt'] ?? '' ) );
+							$_p4_rev_ts  = (int) strtotime( (string) ( $_p4s['revisionSubmittedAt'] ?? '' ) );
+							$_p4_rel_cur = $_p4_rev_ts === 0 || $_p4_rel_ts >= $_p4_rev_ts;
+						}
+					}
+					$_p4_any_hs = false;
+					foreach ( array_slice( $_p4_stages, $_p4_gk_idx + 1, null, true ) as $_p4hs ) {
+						if ( $_p4hs['skipped'] ?? false ) continue;
+						if ( ! empty( $_p4hs['gatekeeperNotifiedAt'] ) ) { $_p4_any_hs = true; break; }
+						$_p4_hs_r = $_p4hs['reviewers'] ?? array();
+						$_p4_hs_d = $_p4hs['decisions'] ?? array();
+						if ( ! empty( $_p4_hs_r ) ) {
+							$_p4_all_d = true;
+							foreach ( $_p4_hs_r as $_p4hr ) {
+								$_p4_hk = strtolower( trim( (string) ( $_p4hr['email'] ?? '' ) ) );
+								if ( empty( $_p4_hs_d[ $_p4_hk ] ) ) { $_p4_all_d = false; break; }
+							}
+							if ( $_p4_all_d ) { $_p4_any_hs = true; break; }
+						}
+					}
+					if ( $_p4_rel_cur && $_p4_last_rel ) {
+						$_p4_sc = 'rrp-stage-approved'; $_p4_sl = "\u2713 Decision Released";
+					} elseif ( $_p4_any_hs ) {
+						$_p4_sc = 'rrp-stage-revision'; $_p4_sl = "\u23f3 Reviewing Higher Stage Feedback";
+					} else {
+						$_p4_sc = 'rrp-stage-approved'; $_p4_sl = "\u2713 Forwarded to Higher Stage Review";
+					}
+				} elseif ( $_p4_is_sub ) {
+					$_p4_completed = (bool) ( $_p4s['stageCompleted'] ?? false );
+					$_p4_gk_not    = ! empty( $_p4s['gatekeeperNotifiedAt'] );
+					if ( $_p4_skipped ) {
+						$_p4_sc = 'rrp-stage-skipped'; $_p4_sl = 'Skipped';
+					} elseif ( empty( $_p4s['reviewers'] ) ) {
+						$_p4_sc = 'rrp-stage-not-started'; $_p4_sl = 'Pending';
+					} elseif ( $_p4_sub_status === 'Revision Required' && ( $_p4_completed || $_p4_gk_not ) ) {
+						$_p4_sc = 'rrp-stage-revision'; $_p4_sl = 'Revision Requested';
+					} elseif ( $_p4_is_gk_s && $_p4_completed ) {
+						$_p4_sc = 'rrp-stage-approved'; $_p4_sl = 'Forwarded to Higher Stage Review';
+					} elseif ( $_p4_gk_not ) {
+						$_p4_sc = 'rrp-stage-approved'; $_p4_sl = "Review Complete \u2014 Awaiting Primary Reviewer";
+					} elseif ( $_p4_is_gk_s && $_p4_sub_status === 'Revision Required' ) {
+						$_p4_sc = 'rrp-stage-revision'; $_p4_sl = 'Revision Requested';
+					} else {
+						$_p4_sc = 'rrp-stage-pending'; $_p4_sl = 'Under Review';
+					}
+				}
+			}
+			$_p4_cs[] = array(
+				'stageName'     => $_p4s['stageName'] ?? '',
+				'stageRole'     => $_p4_wf ? Workflow_Engine::get_stage_role( $_p4_wf, $_p4i ) : ( $_p4_is_gk_s ? 'gatekeeper' : 'committee' ),
+				'statusLabel'   => $_p4_sl,
+				'statusClass'   => $_p4_sc,
+				'reviewers'     => $_p4s['reviewers'] ?? array(),
+				'showDecisions' => ! $_p4_is_sub,
+				'decisions'     => $_p4_is_sub ? array() : $_p4_decs_raw,
+				'feedback'      => $_p4s['feedback'] ?? array(),
+				'skipped'       => $_p4_skipped,
+				'isActiveStage' => ( $_p4i === $_p4_active ),
+			);
+		}
+		$sub['computedStages'] = $_p4_cs;
+
+		// pendingRelease: gatekeeper has un-released higher-stage review result
+		$_p4_pending = false;
+		if ( $_p4_is_gk ) {
+			$_p4_gk_r     = $sub['gatedReleases'] ?? array();
+			$_p4_last_r   = ! empty( $_p4_gk_r ) ? end( $_p4_gk_r ) : null;
+			$_p4_last_rnd = ( $_p4_last_r && isset( $_p4_last_r['round'] ) ) ? (int) $_p4_last_r['round'] : -1;
+			$_p4_cur_rnd  = (int) ( $sub['currentRound'] ?? 0 );
+			$_p4_last_rts = $_p4_last_r ? (int) strtotime( (string) ( $_p4_last_r['releasedAt'] ?? '' ) ) : 0;
+			foreach ( array_slice( $_p4_stages, $_p4_gk_idx + 1, null, true ) as $_p4hs ) {
+				if ( $_p4hs['skipped'] ?? false ) continue;
+				$_p4_hs_done = ! empty( $_p4hs['gatekeeperNotifiedAt'] );
+				if ( ! $_p4_hs_done ) {
+					$_p4_hs_r = $_p4hs['reviewers'] ?? array();
+					$_p4_hs_d = $_p4hs['decisions'] ?? array();
+					if ( ! empty( $_p4_hs_r ) ) {
+						$_p4_all_d = true;
+						foreach ( $_p4_hs_r as $_p4hr ) {
+							$_p4_hk = strtolower( trim( (string) ( $_p4hr['email'] ?? '' ) ) );
+							if ( empty( $_p4_hs_d[ $_p4_hk ] ) ) { $_p4_all_d = false; break; }
+						}
+						if ( $_p4_all_d ) { $_p4_hs_done = true; }
+					}
+				}
+				if ( $_p4_hs_done ) {
+					if ( null === $_p4_last_r ) { $_p4_pending = true; break; }
+					if ( $_p4_last_rnd >= 0 && $_p4_last_rnd < $_p4_cur_rnd ) { $_p4_pending = true; break; }
+					$_p4_hs_ts = ! empty( $_p4hs['gatekeeperNotifiedAt'] ) ? (int) strtotime( (string) $_p4hs['gatekeeperNotifiedAt'] ) : 0;
+					if ( $_p4_hs_ts > $_p4_last_rts ) { $_p4_pending = true; break; }
+				}
+			}
+		}
+		$sub['pendingRelease'] = $_p4_pending;
+
+		// allowedActions: what the current viewer may do
+		$_p4_acts      = array();
+		$_p4_wdrawable = array( 'Submitted - Awaiting Review', 'Submitted', 'Under Initial Review', 'Administrative Review', 'Revision Required', 'Revision Submitted' );
+		if ( $_p4_is_sub && in_array( $_p4_sub_status, $_p4_wdrawable, true ) )                                                                                                                $_p4_acts[] = 'withdraw';
+		if ( $_p4_is_sub && $_p4_sub_status === 'Rejected' && ( empty( $sub['appeal'] ) || in_array( $sub['appeal']['status'] ?? '', array( 'upheld', 'overturned' ), true ) ) )               $_p4_acts[] = 'appeal';
+		if ( $_p4_is_sub && $_p4_sub_status === 'Full Paper Invited' )                                                                                                                          $_p4_acts[] = 'full-paper';
+		$sub['allowedActions'] = $_p4_acts;
+
+		// workflowStatusClass: CSS badge class for the submission status
+		$_p4_swc = strtolower( str_replace( array( ' ', '_' ), '-', $_p4_sub_status ) );
+		if      ( in_array( $_p4_swc, array( 'approved', 'conditionally-approved', 'confirmed-for-presentation', 'published', 'approved-for-submission', 'accepted', 'conditionally-accepted' ), true ) ) { $sub['workflowStatusClass'] = 'rrp-dec-approved'; }
+		elseif  ( $_p4_swc === 'rejected' )                                                                                                                                                                 { $sub['workflowStatusClass'] = 'rrp-dec-rejected'; }
+		elseif  ( in_array( $_p4_swc, array( 'needs-revision', 'revision-required', 'revision', 'revision-submitted' ), true ) )                                                                            { $sub['workflowStatusClass'] = 'rrp-dec-revision'; }
+		elseif  ( $_p4_swc === 'draft' )                                                                                                                                                                    { $sub['workflowStatusClass'] = 'rrp-dec-draft'; }
+		elseif  ( $_p4_swc === 'submitted' )                                                                                                                                                                { $sub['workflowStatusClass'] = 'rrp-dec-submitted'; }
+		elseif  ( in_array( $_p4_swc, array( 'appeal-pending', 'appeal-under-review' ), true ) )                                                                                                            { $sub['workflowStatusClass'] = 'rrp-dec-revision'; }
+		elseif  ( $_p4_swc === 'full-paper-invited' )                                                                                                                                                       { $sub['workflowStatusClass'] = 'rrp-dec-inreview'; }
+		elseif  ( strpos( $_p4_swc, 'review' ) !== false || strpos( $_p4_swc, 'in-progress' ) !== false )                                                                                                   { $sub['workflowStatusClass'] = 'rrp-dec-inreview'; }
+		elseif  ( in_array( $_p4_swc, array( 'withdrawn', 'cancelled' ), true ) )                                                                                                                           { $sub['workflowStatusClass'] = 'rrp-dec-withdrawn'; }
+		else                                                                                                                                                                                                 { $sub['workflowStatusClass'] = 'rrp-dec-pending'; }
+		// ── End Phase 4 ──────────────────────────────────────────────────────────
 
 		return new WP_REST_Response( $sub, 200 );
 	}
@@ -2304,8 +2489,13 @@ class Portal_REST {
 					$_is_gated_review = true; break;
 				}
 			}
+			$_sd_wf       = Workflow_Engine::get_workflow_for_submission( $sub );
+			$_is_gk_stage = $_sd_wf
+				? Workflow_Engine::is_gatekeeper_stage( $_sd_wf, $stage_index )
+				: ( $stage_index === 0 );
+			$_sd_gk_idx   = $_sd_wf ? Workflow_Engine::gatekeeper_stage_index( $_sd_wf ) : 0;
 			$new_status = $sub['status'];
-			if ( ! $_is_gated_review || $stage_index === 0 ) {
+			if ( ! $_is_gated_review || $_is_gk_stage ) {
 				// Non-gated OR gatekeeper stage: apply decision to submission status normally
 				if ( $decision === 'Rejected' ) {
 					$new_status = 'Rejected';
@@ -2315,7 +2505,7 @@ class Portal_REST {
 			}
 			// else: higher-stage gated reviewer — status stays as-is until gatekeeper acts
 			$data['submissions'][ $idx ] = array_merge( $sub, array( 'reviewStages' => $review_stages, 'status' => $new_status ) );
-			if ( ! $_is_gated_review || $stage_index === 0 ) {
+			if ( ! $_is_gated_review || $_is_gk_stage ) {
 				$data['submissions'][ $idx ]['status'] = Portal_Data::derive_submission_status( $data['submissions'][ $idx ] );
 			}
 			self::append_audit_log( $data, $idx, 'decision_recorded', 'Decision "' . $decision . '" recorded for stage "' . $stage_name . '" by ' . $reviewer_email . '.' );
@@ -2332,14 +2522,14 @@ class Portal_REST {
 			) );
 			if ( $decision === 'Rejected' ) {
 				// For gated higher-stage reviewers, don't fire submitter-facing rejection webhook
-				if ( ! $_is_gated_review || $stage_index === 0 ) {
+				if ( ! $_is_gated_review || $_is_gk_stage ) {
 					self::fire_webhooks( 'submission.rejected', array(
 						'submissionId' => $updated['id'] ?? '',
 						'title'        => $updated['title'] ?? '',
 						'stage'        => $stage_name,
 					) );
 				}
-			} elseif ( ( ! $_is_gated_review || $stage_index === 0 ) && in_array( $_wh_status, array( 'approved', 'confirmed for presentation', 'published', 'approved for submission', 'accepted' ), true ) ) {
+			} elseif ( ( ! $_is_gated_review || $_is_gk_stage ) && in_array( $_wh_status, array( 'approved', 'confirmed for presentation', 'published', 'approved for submission', 'accepted' ), true ) ) {
 				self::fire_webhooks( 'submission.approved', array(
 					'submissionId' => $updated['id'] ?? '',
 					'title'        => $updated['title'] ?? '',
@@ -2358,9 +2548,9 @@ class Portal_REST {
 					}
 				}
 			}
-			if ( $_is_gated_review && $stage_index > 0 && $_stage_all_decided ) {
+			if ( $_is_gated_review && ! $_is_gk_stage && $_stage_all_decided ) {
 				// Notify gatekeeper that this higher stage has completed its review
-				$_gk_stage = $review_stages[0] ?? array();
+				$_gk_stage = $review_stages[ $_sd_gk_idx ] ?? $review_stages[0] ?? array();
 				foreach ( $_gk_stage['reviewers'] ?? array() as $_gkr ) {
 					$_gk_to = $_gkr['email'] ?? '';
 					if ( $_gk_to && is_email( $_gk_to ) && self::user_wants_notif( $_gk_to, 'submission_status_changed' ) ) {
@@ -2371,8 +2561,7 @@ class Portal_REST {
 						);
 					}
 				}
-				// Mark this stage as having notified the gatekeeper, so the UI can reflect it
-				$data['submissions'][ $idx ]['reviewStages'][ $stage_index ]['gatekeeperNotifiedAt'] = gmdate( 'c' );
+				// Phase 6: gatekeeperNotifiedAt write removed — engine detects all-decided dynamically.
 				// Re-derive and store the submission status now that a higher stage is complete
 				$data['submissions'][ $idx ]['status'] = Portal_Data::derive_submission_status( $data['submissions'][ $idx ] );
 				Portal_Data::write_submissions( $data );
@@ -2560,11 +2749,14 @@ class Portal_REST {
 					$review_stages[ $si ]['skipped'] = false;
 				}
 			}
-			// Stamp the revision time on the first stage (Chair Review) so it shows it was re-submitted
-			if ( isset( $review_stages[0] ) ) {
-				$review_stages[0]['revisionSubmittedAt'] = gmdate( 'c' );
+			// Stamp the revision time on the gatekeeper stage so it shows it was re-submitted
+			$_srs_wf     = Workflow_Engine::get_workflow_for_submission( $sub );
+			$_srs_gk_idx = $_srs_wf ? Workflow_Engine::gatekeeper_stage_index( $_srs_wf ) : 0;
+			if ( isset( $review_stages[ $_srs_gk_idx ] ) ) {
+				$review_stages[ $_srs_gk_idx ]['revisionSubmittedAt'] = gmdate( 'c' );
 			}
 			$revision_count = (int) ( $sub['revisionCount'] ?? 0 ) + 1;
+			$current_round  = (int) ( $sub['currentRound']  ?? 0 ) + 1;
 			// Capture metadata snapshot for revision diff view
 			$_rev_snap    = array(
 				'round'        => (int) ( $sub['revisionCount'] ?? 0 ),
@@ -2581,6 +2773,7 @@ class Portal_REST {
 				'reviewStages'    => $review_stages,
 				'status'          => 'Revision Submitted',
 				'revisionCount'   => $revision_count,
+				'currentRound'    => $current_round,
 				'revisionHistory' => $_rev_history,
 			) );
 			self::append_audit_log( $data, $idx, 'revision_submitted', 'Revision submitted (round ' . $revision_count . ').' );
@@ -3235,12 +3428,16 @@ class Portal_REST {
 			$config['submissionTypes'] = $body['submissionTypes'];
 		}
 		// Per-stage deadline days: stageDueDays[typeId][stageName] = int
+		// Merge per-type — never replace the entire object so that saving one
+		// type does not wipe the days that were configured for other types.
 		if ( isset( $body['stageDueDays'] ) && is_array( $body['stageDueDays'] ) ) {
-			$sdd = array();
+			$sdd = is_array( $config['stageDueDays'] ?? null ) ? $config['stageDueDays'] : array();
 			foreach ( $body['stageDueDays'] as $type_id => $stage_map ) {
 				$tid = sanitize_key( (string) $type_id );
 				if ( is_array( $stage_map ) ) {
-					$sdd[ $tid ] = array();
+					if ( ! isset( $sdd[ $tid ] ) || ! is_array( $sdd[ $tid ] ) ) {
+						$sdd[ $tid ] = array();
+					}
 					foreach ( $stage_map as $sname => $days ) {
 						$sdd[ $tid ][ sanitize_text_field( (string) $sname ) ] = max( 1, (int) $days );
 					}
@@ -3481,13 +3678,23 @@ class Portal_REST {
 				if ( array_key_exists( 'gatedReview', $body ) ) {
 					$t['gatedReview'] = (bool) $body['gatedReview'];
 				}
+				if ( array_key_exists( 'workflow', $body ) ) {
+					if ( is_array( $body['workflow'] ) ) {
+						$t['workflow'] = self::sanitize_workflow_config( $body['workflow'] );
+					} else {
+						unset( $t['workflow'] );
+					}
+				}
+				if ( array_key_exists( 'requiredFields', $body ) && is_array( $body['requiredFields'] ) ) {
+					$t['requiredFields'] = array_values( array_filter( array_map( 'sanitize_text_field', $body['requiredFields'] ) ) );
+				}
 				break;
 			}
 		}
 		unset( $t );
 		if ( ! $found ) {
 			// Create new type if it doesn't exist
-			$types[] = array(
+			$new_type = array(
 				'id'                 => $id,
 				'label'              => sanitize_text_field( (string) ( $body['label'] ?? $id ) ),
 				'description'        => sanitize_text_field( (string) ( $body['description'] ?? '' ) ),
@@ -3498,6 +3705,13 @@ class Portal_REST {
 				'allowMeetings'      => (bool) ( $body['allowMeetings'] ?? false ),
 				'gatedReview'        => (bool) ( $body['gatedReview'] ?? false ),
 			);
+			if ( isset( $body['workflow'] ) && is_array( $body['workflow'] ) ) {
+				$new_type['workflow'] = self::sanitize_workflow_config( $body['workflow'] );
+			}
+			if ( isset( $body['requiredFields'] ) && is_array( $body['requiredFields'] ) ) {
+				$new_type['requiredFields'] = array_values( array_filter( array_map( 'sanitize_text_field', $body['requiredFields'] ) ) );
+			}
+			$types[] = $new_type;
 		}
 		$config['submissionTypes'] = $types;
 		Portal_Data::write_config( $config );
@@ -3516,6 +3730,131 @@ class Portal_REST {
 	}
 
 	// ── Workflow Stages library ───────────────────────────────────────────────
+
+	/**
+	 * Return the static schema options used by the workflow engine editor UI.
+	 * Provides available stage roles, decision rules, and default decision labels.
+	 */
+	/**
+	 * Compute the CSS badge class from a submission status string.
+	 * Single source of truth — mirrors the JS statusBadgeCls() function.
+	 *
+	 * @param string $status Raw status label.
+	 * @return string  CSS class name.
+	 */
+	private static function status_to_badge_class( string $status ): string {
+		$s = strtolower( preg_replace( '/[\s_]+/', '-', $status ) );
+		$approved = array( 'approved', 'conditionally-approved', 'confirmed-for-presentation', 'published', 'approved-for-submission', 'accepted', 'conditionally-accepted' );
+		if ( in_array( $s, $approved, true ) )                                              return 'rrp-dec-approved';
+		if ( $s === 'rejected' )                                                             return 'rrp-dec-rejected';
+		if ( in_array( $s, array( 'needs-revision', 'revision-required', 'revision', 'revision-submitted' ), true ) ) return 'rrp-dec-revision';
+		if ( $s === 'draft' )                                                                return 'rrp-dec-draft';
+		if ( $s === 'submitted' )                                                            return 'rrp-dec-submitted';
+		if ( in_array( $s, array( 'appeal-pending', 'appeal-under-review' ), true ) )       return 'rrp-dec-revision';
+		if ( $s === 'full-paper-invited' )                                                   return 'rrp-dec-inreview';
+		if ( strpos( $s, 'review' ) !== false || strpos( $s, 'in-progress' ) !== false )    return 'rrp-dec-inreview';
+		if ( in_array( $s, array( 'withdrawn', 'cancelled' ), true ) )                      return 'rrp-dec-withdrawn';
+		return 'rrp-dec-pending';
+	}
+
+	/**
+	 * Phase 6 migration: stamp currentRound on existing submissions that lack it.
+	 * Safe to run multiple times (idempotent).
+	 */
+	public static function migration_stamp_rounds( WP_REST_Request $request ) {
+		$data    = Portal_Data::read_submissions();
+		$updated = 0;
+		foreach ( $data['submissions'] as &$sub ) {
+			if ( isset( $sub['currentRound'] ) ) {
+				continue; // Already stamped by Phase 1+
+			}
+			$releases = isset( $sub['gatedReleases'] ) && is_array( $sub['gatedReleases'] ) ? $sub['gatedReleases'] : array();
+			$count    = count( $releases );
+			if ( $count === 0 ) {
+				$sub['currentRound'] = 0;
+			} else {
+				// If the most recent release has a round stamp, use it directly.
+				// Otherwise derive: if the last release appears current (no newer revisionSubmittedAt), count-1;
+				// if the submitter revised after the last release, count.
+				$last_rel = end( $releases );
+				if ( isset( $last_rel['round'] ) ) {
+					// Already has round — skip entirely
+					$sub['currentRound'] = (int) $last_rel['round'];
+				} else {
+					$rel_ts   = isset( $last_rel['releasedAt'] ) ? strtotime( (string) $last_rel['releasedAt'] ) : 0;
+					// Check gatekeeper stage (stage 0) revisionSubmittedAt
+					$gk_stage = ( $sub['reviewStages'][0] ?? array() );
+					$rev_ts   = isset( $gk_stage['revisionSubmittedAt'] ) ? strtotime( (string) $gk_stage['revisionSubmittedAt'] ) : 0;
+					$revised_after_release = ( $rev_ts > 0 && $rel_ts > 0 && $rev_ts > $rel_ts );
+					$sub['currentRound'] = $revised_after_release ? $count : $count - 1;
+				}
+			}
+			$updated++;
+		}
+		unset( $sub );
+		if ( $updated > 0 ) {
+			Portal_Data::write_submissions( $data );
+		}
+		return new WP_REST_Response( array( 'stamped' => $updated, 'total' => count( $data['submissions'] ) ), 200 );
+	}
+
+	public static function workflow_schema_get() {
+		return new WP_REST_Response( array(
+			'stageRoles'       => array( 'gatekeeper', 'committee', 'advisory' ),
+			'decisionRules'    => array( 'unanimous', 'majority', 'single' ),
+			'defaultDecisions' => array( 'Approved', 'Needs Revision', 'Rejected', 'Pending' ),
+		), 200 );
+	}
+
+	/**
+	 * Sanitize and normalise a workflow config block supplied from the editor UI.
+	 *
+	 * @param array $raw Raw workflow array from the REST body.
+	 * @return array     Sanitized workflow config.
+	 */
+	private static function sanitize_workflow_config( array $raw ): array {
+		$allowed_roles = array( 'gatekeeper', 'committee', 'advisory' );
+		$allowed_rules = array( 'unanimous', 'majority', 'single' );
+		$sanitized_stages = array();
+		foreach ( (array) ( $raw['stages'] ?? array() ) as $ws ) {
+			if ( ! is_array( $ws ) ) continue;
+			$role = in_array( $ws['role'] ?? '', $allowed_roles, true ) ? $ws['role'] : 'committee';
+			$rule = in_array( $ws['decisionRule'] ?? '', $allowed_rules, true ) ? $ws['decisionRule'] : 'unanimous';
+			$decs = array_values( array_filter( array_map( 'sanitize_text_field', (array) ( $ws['decisions'] ?? array() ) ) ) );
+			$vis  = array_values( array_filter( array_map( 'sanitize_text_field', (array) ( $ws['visibleTo'] ?? array() ) ) ) );
+			$sanitized_stages[] = array(
+				'name'           => sanitize_text_field( (string) ( $ws['name'] ?? '' ) ),
+				'role'           => $role,
+				'decisionRule'   => $rule,
+				'decisions'      => $decs,
+				'releaseChannel' => (bool) ( $ws['releaseChannel'] ?? false ),
+				'visibleTo'      => $vis,
+			);
+		}
+		$final_map = array();
+		foreach ( (array) ( $raw['finalStatusByDecision'] ?? array() ) as $dec => $status ) {
+			$k = sanitize_text_field( (string) $dec );
+			$v = sanitize_text_field( (string) $status );
+			if ( $k !== '' && $v !== '' ) {
+				$final_map[ $k ] = $v;
+			}
+		}
+		$student_vis = array();
+		if ( isset( $raw['studentVisibility'] ) && is_array( $raw['studentVisibility'] ) ) {
+			$student_vis = array(
+				'showStageNames'    => (bool) ( $raw['studentVisibility']['showStageNames'] ?? true ),
+				'showReviewerNames' => (bool) ( $raw['studentVisibility']['showReviewerNames'] ?? false ),
+			);
+		}
+		$out = array(
+			'stages'               => $sanitized_stages,
+			'finalStatusByDecision' => $final_map,
+		);
+		if ( ! empty( $student_vis ) ) {
+			$out['studentVisibility'] = $student_vis;
+		}
+		return $out;
+	}
 
 	public static function workflow_stages_get( WP_REST_Request $request ) {
 		$config = Portal_Data::read_config();
@@ -3720,7 +4059,9 @@ class Portal_REST {
 				$deadline = Portal_Data::get_effective_deadline( $s, $stage_idx );
 			}
 
-			$_is_gk = self::is_gatekeeper( $s, $email ) && self::is_gated_review_type( $s['submissionType'] ?? $s['type'] ?? '' );
+			$_rev_wf = Workflow_Engine::get_workflow_for_submission( $s );
+		$_rev_vr = Workflow_Engine::compute_viewer_role( $s, $email, false, $_rev_wf ?? array() );
+		$_is_gk  = ( $_rev_vr === 'gatekeeper' ) && self::is_gated_review_type( $s['submissionType'] ?? $s['type'] ?? '' );
 			// For gatekeeper: use the released decision (if any) as myDecision so the dashboard badge
 			// reflects the decision communicated to the student, not the internal stage vote.
 			$_gk_released_dec = null;
@@ -3758,6 +4099,7 @@ class Portal_REST {
 				'myDecision'             => $_gk_action_required ? null : ( $_gk_released_dec ?? $my_decision ),
 				'pendingAction'          => $in_active_stage && null === $my_decision || $_gk_action_required,
 				'isGatekeeper'           => $_is_gk,
+				'viewerRole'             => $_rev_vr,
 				'gatekeeperActionRequired' => $_gk_action_required,
 			);
 		}
@@ -7067,7 +7409,9 @@ class Portal_REST {
 			return new WP_REST_Response( array( 'error' => 'This submission type does not use gated review.' ), 400 );
 		}
 		$is_admin = current_user_can( 'rrp_manage_workflow' ) || current_user_can( 'rrp_full_admin_access' );
-		if ( ! $is_admin && ! self::is_gatekeeper( $sub, $user_email ) ) {
+		$_gr_release_wf  = Workflow_Engine::get_workflow_for_submission( $sub );
+		$_can_release_gk = $_gr_release_wf ? Workflow_Engine::can_release( $sub, $user_email, $_gr_release_wf ) : self::is_gatekeeper( $sub, $user_email );
+		if ( ! $is_admin && ! $_can_release_gk ) {
 			return new WP_REST_Response( array( 'error' => 'Only the primary reviewer (Stage 1) or an administrator may release a decision.' ), 403 );
 		}
 
@@ -7085,6 +7429,7 @@ class Portal_REST {
 			'releasedAt'     => gmdate( 'c' ),
 			'releasedBy'     => $user_email,
 			'releasedByName' => $user->display_name ?: $user->user_login,
+			'round'          => (int) ( $sub['currentRound'] ?? 0 ),
 		);
 		$releases  = isset( $sub['gatedReleases'] ) && is_array( $sub['gatedReleases'] ) ? $sub['gatedReleases'] : array();
 		$releases[] = $release;
@@ -7153,7 +7498,9 @@ class Portal_REST {
 			return new WP_REST_Response( array( 'error' => 'This submission type does not use gated review.' ), 400 );
 		}
 		$is_admin = current_user_can( 'rrp_manage_workflow' ) || current_user_can( 'rrp_full_admin_access' );
-		if ( ! $is_admin && ! self::is_gatekeeper( $sub, $user_email ) ) {
+		$_rrc_wf  = Workflow_Engine::get_workflow_for_submission( $sub );
+		$_can_rrc = $_rrc_wf ? Workflow_Engine::can_release( $sub, $user_email, $_rrc_wf ) : self::is_gatekeeper( $sub, $user_email );
+		if ( ! $is_admin && ! $_can_rrc ) {
 			return new WP_REST_Response( array( 'error' => 'Only the primary reviewer or an administrator may request a re-check.' ), 403 );
 		}
 
@@ -7213,7 +7560,9 @@ class Portal_REST {
 		$user       = wp_get_current_user();
 		$user_email = strtolower( trim( (string) $user->user_email ) );
 		$is_admin   = current_user_can( 'rrp_manage_workflow' ) || current_user_can( 'rrp_full_admin_access' );
-		$is_gk      = self::is_gatekeeper( $sub, $user_email );
+		$_msg_wf = Workflow_Engine::get_workflow_for_submission( $sub );
+		$_msg_vr = Workflow_Engine::compute_viewer_role( $sub, $user_email, false, $_msg_wf ?? array() );
+		$is_gk   = $_msg_vr === 'gatekeeper';
 
 		// Determine if user is any stage reviewer and which stage
 		$user_stage_idx = null;
@@ -7266,7 +7615,9 @@ class Portal_REST {
 			return new WP_REST_Response( array( 'error' => 'This submission does not use gated review.' ), 400 );
 		}
 		$is_admin = current_user_can( 'rrp_manage_workflow' ) || current_user_can( 'rrp_full_admin_access' );
-		$is_gk    = self::is_gatekeeper( $sub, $user_email );
+		$_msgp_wf = Workflow_Engine::get_workflow_for_submission( $sub );
+		$_msgp_vr = Workflow_Engine::compute_viewer_role( $sub, $user_email, false, $_msgp_wf ?? array() );
+		$is_gk    = $_msgp_vr === 'gatekeeper';
 		$is_rev   = false;
 		foreach ( $sub['reviewStages'] ?? array() as $stage ) {
 			foreach ( $stage['reviewers'] ?? array() as $r ) {
@@ -7320,7 +7671,9 @@ class Portal_REST {
 		$user       = wp_get_current_user();
 		$user_email = strtolower( trim( (string) $user->user_email ) );
 		$is_admin   = current_user_can( 'rrp_manage_workflow' ) || current_user_can( 'rrp_full_admin_access' );
-		$is_gk      = self::is_gatekeeper( $sub, $user_email );
+		$_mtg_wf = Workflow_Engine::get_workflow_for_submission( $sub );
+		$_mtg_vr = Workflow_Engine::compute_viewer_role( $sub, $user_email, false, $_mtg_wf ?? array() );
+		$is_gk   = $_mtg_vr === 'gatekeeper';
 
 		$user_stage_idx = null;
 		foreach ( $sub['reviewStages'] ?? array() as $si => $stage ) {
@@ -7370,7 +7723,9 @@ class Portal_REST {
 			return new WP_REST_Response( array( 'error' => 'This submission does not use gated review.' ), 400 );
 		}
 		$is_admin = current_user_can( 'rrp_manage_workflow' ) || current_user_can( 'rrp_full_admin_access' );
-		$is_gk    = self::is_gatekeeper( $sub, $user_email );
+		$_mtp_wf = Workflow_Engine::get_workflow_for_submission( $sub );
+		$_mtp_vr = Workflow_Engine::compute_viewer_role( $sub, $user_email, false, $_mtp_wf ?? array() );
+		$is_gk   = $_mtp_vr === 'gatekeeper';
 		$is_rev   = false;
 		foreach ( $sub['reviewStages'] ?? array() as $stage ) {
 			foreach ( $stage['reviewers'] ?? array() as $r ) {

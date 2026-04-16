@@ -588,7 +588,7 @@
           return '<li class="rrp-sub-item">' +
             '<div class="rrp-sub-item-header">' +
               '<strong>' + escapeHtml(s.title || 'Untitled') + '</strong>' +
-              '<span class="rrp-decision-badge ' + statusBadgeCls(s.status) + '">' + escapeHtml(s.status || 'Submitted') + '</span>' +
+              '<span class="rrp-decision-badge ' + (s.workflowStatusClass || statusBadgeCls(s.status)) + '">' + escapeHtml(s.status || 'Submitted') + '</span>' +
             '</div>' +
             '<div class="rrp-sub-item-meta">' +
               '<span class="rrp-meta-id"><span class="rrp-meta-lbl">ID</span>' + escapeHtml(s.id) + '</span>' +
@@ -1129,7 +1129,7 @@
           return '<li class="rrp-sub-item' + (s.reviewerRemoved ? ' rrp-sub-item-reassign' : '') + '">' +
             '<div class="rrp-sub-item-header">' +
               '<strong>' + escapeHtml(s.title || 'Untitled') + '</strong>' +
-              '<span class="rrp-decision-badge ' + statusBadgeCls(s.status) + '">' + escapeHtml(s.status || 'Submitted') + '</span>' +
+              '<span class="rrp-decision-badge ' + (s.workflowStatusClass || statusBadgeCls(s.status)) + '">' + escapeHtml(s.status || 'Submitted') + '</span>' +
               (s.reviewerRemoved ? '<span class="rrp-reassign-badge">&#9888; Reassignment Needed</span>' : '') +
             '</div>' +
             '<div class="rrp-sub-item-meta">' +
@@ -1754,7 +1754,7 @@
             return '<li class="rrp-sub-item rrp-sub-item-reassign">' +
               '<div class="rrp-sub-item-header">' +
                 '<strong>' + escapeHtml(s.title || 'Untitled') + '</strong>' +
-                '<span class="rrp-decision-badge ' + statusBadgeCls(s.status) + '">' + escapeHtml(s.status || 'Submitted') + '</span>' +
+                '<span class="rrp-decision-badge ' + (s.workflowStatusClass || statusBadgeCls(s.status)) + '">' + escapeHtml(s.status || 'Submitted') + '</span>' +
                 '<span class="rrp-reassign-badge">&#9888; Reassignment Needed</span>' +
               '</div>' +
               '<div class="rrp-sub-item-meta">' +
@@ -3291,7 +3291,7 @@
           var gkBadge    = isGKItem ? '<span class="rrp-gatekeeper-badge" title="You are the primary reviewer (gated conduit) for this submission">&#128272; Primary Reviewer</span> ' : '';
           // When gatekeeper has higher-stage feedback to review, show submission status not personal decision
           var badgeText  = gkAction ? (item.status || 'Action Required') : (myDec ? myDec : (item.status || 'Pending'));
-          var badgeCls   = gkAction ? 'rrp-dec-revision' : (myDec ? statusBadgeCls(myDec) : statusBadgeCls(item.status));
+          var badgeCls   = gkAction ? 'rrp-dec-revision' : (myDec ? statusBadgeCls(myDec) : (item.workflowStatusClass || statusBadgeCls(item.status)));
           // Secondary indicator: "Action Required" when reviewer is in active stage but hasn't voted yet, or gatekeeper needs to act.
           var actionBadge = (gkAction || (item.pendingAction && !myDec))
             ? '<span class="rrp-decision-badge rrp-dec-pending" style="font-size:.72rem;margin-left:.35rem;">&#9888; Action Required</span>'
@@ -3630,97 +3630,45 @@
         });
       }
       var isSubmitter = (sub.submitterEmail || '').toLowerCase() === userEmail;
-      var isGatekeeper      = sub.isGatekeeper      || false;
+      var isGatekeeper      = sub.viewerRole === 'gatekeeper' || sub.isGatekeeper || false;
       var isGatedReviewAdmin = sub.isGatedReviewAdmin || false;
       var isGatedReview     = !!(sub.gatedReview);
       var needsRevision = sub.status === 'Revision Required' || sub.status === 'Rejected';
-      var _withdrawableStatuses = ['Submitted - Awaiting Review', 'Submitted', 'Under Initial Review', 'Administrative Review', 'Revision Required', 'Revision Submitted'];
-      var canWithdraw   = isSubmitter && _withdrawableStatuses.indexOf(sub.status) !== -1;
-      var _nonCancellable = ['Withdrawn', 'Cancelled'];
-      var canCancel     = isAdmin && _nonCancellable.indexOf(sub.status) === -1;
+      var _allowedActs   = sub.allowedActions || [];
+      var canWithdraw   = _allowedActs.indexOf('withdraw')   !== -1;
+      var canCancel     = isAdmin && ['Withdrawn', 'Cancelled'].indexOf(sub.status) === -1;
       var isLocked      = sub.status === 'Withdrawn' || sub.status === 'Cancelled';
-      var canAppeal     = isSubmitter && sub.status === 'Rejected' &&
-                          (!sub.appeal || sub.appeal.status === 'upheld' || sub.appeal.status === 'overturned');
+      var canAppeal     = _allowedActs.indexOf('appeal')     !== -1;
       var hasActiveAppeal = sub.appeal && (sub.appeal.status === 'pending' || sub.appeal.status === 'under_review');
-      var canFullPaper  = isSubmitter && sub.status === 'Full Paper Invited';
+      var canFullPaper  = _allowedActs.indexOf('full-paper') !== -1;
 
       // Stage timeline HTML
-      // Find the index of the current active stage so future stages can show "Not Started"
+      // Stage timeline HTML — status labels/visibility computed server-side; JS is a pure renderer
       var _allStages = sub.reviewStages || [];
-      var _activeStageIdx = -1;
-      for (var _asi = 0; _asi < _allStages.length; _asi++) {
-        if (_allStages[_asi].skipped) continue;
-        var _asDecs = _allStages[_asi].decisions || {};
-        if ((deadlines[_asi] || {}).approved) continue; // server-confirmed approved; skip
-        var _asRevs = _allStages[_asi].reviewers || [];
-        if (_asRevs.length === 0) { _activeStageIdx = _asi; break; }
-        var _asAllApproved = _asRevs.every(function (r) {
-          return (_asDecs[(r.email || '').toLowerCase()] || '').toLowerCase() === 'approved';
-        });
-        if (!_asAllApproved) { _activeStageIdx = _asi; break; }
-      }
-
-      var stagesHtml = _allStages.map(function (stage, i) {
-        var dl = deadlines[i] || {};
-        var approved = dl.approved || false;
-        var skipped  = stage.skipped || false;
-        var decisions = stage.decisions || {};
-        var hasRevisionDec = Object.keys(decisions).some(function (k) {
-          return (decisions[k] || '').toLowerCase() === 'needs revision';
-        });
-        var isFuture = !skipped && !approved && _activeStageIdx !== -1 && i > _activeStageIdx;
-        var statusClass, statusLabel;
-        if (skipped)           { statusClass = 'rrp-stage-skipped';     statusLabel = 'Skipped'; }
-        else if (approved)     { statusClass = 'rrp-stage-approved';    statusLabel = '\u2713 Approved'; }
-        else if (isFuture)     { statusClass = 'rrp-stage-not-started'; statusLabel = 'Not Started'; }
-        else if (hasRevisionDec) { statusClass = 'rrp-stage-revision';  statusLabel = 'Revision Requested'; }
-        else                   { statusClass = 'rrp-stage-pending';     statusLabel = 'In Progress'; }
-        // Gated review: committee reviewer sees stage 0 only as "Review Complete" — hide individual votes
-        if (isGatedReview && !isGatekeeper && !isGatedReviewAdmin && !isAdmin && !isSubmitter && i === 0) {
-          if (approved) {
-            statusClass = 'rrp-stage-approved'; statusLabel = '\u2713 Review Complete';
+      var _csArr     = sub.computedStages || null;
+      var stagesHtml = (_csArr || _allStages).map(function (cs, i) {
+        var stageName   = cs.stageName   || '';
+        var statusClass = cs.statusClass || 'rrp-stage-pending';
+        var statusLabel = cs.statusLabel || 'In Progress';
+        var csDecisions = cs.decisions   || {};
+        var csReviewers = cs.reviewers   || [];
+        var csFeedback  = cs.feedback    || [];
+        var showDecs    = cs.showDecisions !== false;
+        var dl          = deadlines[i]   || {};
+        var reviewerRows = csReviewers.map(function (r) {
+          var em = (r.email || '').toLowerCase();
+          if (showDecs) {
+            var dec = csDecisions[em] || 'Pending';
+            var cls = dec === 'Approved' ? 'rrp-dec-approved' : (dec === 'Rejected' ? 'rrp-dec-rejected' : (dec === 'Needs Revision' ? 'rrp-dec-revision' : 'rrp-dec-pending'));
+            return '<li>' + escapeHtml(r.name || r.email) + ' <span class="rrp-decision-badge ' + cls + '">' + escapeHtml(dec) + '</span></li>';
           }
-          // reviewerRows was already stripped by PHP; enforce empty to be safe
-          reviewerRows = '';
-        }
-        // Gated review: override stage 0 label for the gatekeeper to show gated-aware state
-        if (isGatedReview && isGatekeeper && i === 0 && approved) {
-          var _anyHSC = (sub.reviewStages || []).slice(1).some(function (hs) {
-            if (hs.skipped) return false;
-            if (hs.gatekeeperNotifiedAt) return true;
-            var _hsr = hs.reviewers || [];
-            if (!_hsr.length) return false;
-            var _hsd = hs.decisions || {};
-            return _hsr.every(function (r) { var k = (r.email || '').toLowerCase().trim(); return k && !!_hsd[k]; });
-          });
-          var _gkRels   = sub.gatedReleases || [];
-          var _lastGkRel = _gkRels.length ? _gkRels[_gkRels.length - 1] : null;
-          var _gkRelTs   = _lastGkRel ? new Date(_lastGkRel.releasedAt || 0).getTime() : 0;
-          var _gkS0RevAt = (_allStages[0] || {}).revisionSubmittedAt;
-          var _gkS0RevTs = _gkS0RevAt ? new Date(_gkS0RevAt).getTime() : 0;
-          var _relIsCurrent = !!_lastGkRel && (!_gkS0RevTs || _gkRelTs >= _gkS0RevTs);
-          if (_relIsCurrent) {
-            statusLabel = '\u2713 Decision Released';
-            statusClass = 'rrp-stage-approved';
-          } else if (_anyHSC) {
-            statusLabel = '\u23f3 Reviewing Higher Stage Feedback';
-            statusClass = 'rrp-stage-revision';
-          } else {
-            statusLabel = '\u2713 Forwarded to Higher Stage Review';
-            statusClass = 'rrp-stage-approved';
-          }
-        }
-        var reviewerRows = (stage.reviewers || []).map(function (r) {
-          var em  = (r.email || '').toLowerCase();
-          var dec = decisions[em] || 'Pending';
-          var cls = dec === 'Approved' ? 'rrp-dec-approved' : (dec === 'Rejected' ? 'rrp-dec-rejected' : (dec === 'Needs Revision' ? 'rrp-dec-revision' : 'rrp-dec-pending'));
-          return '<li>' + escapeHtml(r.name || r.email) + ' <span class="rrp-decision-badge ' + cls + '">' + escapeHtml(dec) + '</span></li>';
+          return '<li>' + escapeHtml(r.name || r.email || 'Reviewer') + '</li>';
         }).join('');
-        var feedbackHtml = (stage.feedback || []).map(function (f) {
+        var feedbackHtml = csFeedback.map(function (f) {
           return '<div class="rrp-feedback-item"><span class="rrp-feedback-meta">' + escapeHtml(f.name || f.email || f.role) + ':</span> <div class="rrp-feedback-body">' + safeHtml(f.message) + '</div></div>';
         }).join('');
         // Student files already submitted for this stage
-        var _stgFiles = (sub.attachments || []).filter(function (a) { return a.stageName === stage.stageName && a.studentFileUpload; });
+        var _stgFiles = (sub.attachments || []).filter(function (a) { return a.stageName === stageName && a.studentFileUpload; });
         var _stgFilesHtml = _stgFiles.length
           ? '<div class="rrp-stage-files"><strong style="font-size:.82rem;">&#128196; Submitted files:</strong>' +
             '<ul style="margin:.2rem 0 0;padding-left:1.2rem;">' +
@@ -3731,11 +3679,11 @@
             }).join('') + '</ul></div>'
           : '';
         // Upload widget for submitter on current active stage when stage allows student files
-        var _wsConf = _stageConfigMap[stage.stageName] || {};
+        var _wsConf = _stageConfigMap[stageName] || {};
         var _stgUploadHtml = '';
-        if (isSubmitter && !isLocked && i === _activeStageIdx && _wsConf.allowStudentFiles) {
+        if (isSubmitter && !isLocked && cs.isActiveStage && _wsConf.allowStudentFiles) {
           var _sfLbl = _wsConf.studentFileLabel || 'Additional Document';
-          _stgUploadHtml = '<div class="rrp-stage-file-upload" data-stage-upload="' + escapeHtml(stage.stageName) + '">' +
+          _stgUploadHtml = '<div class="rrp-stage-file-upload" data-stage-upload="' + escapeHtml(stageName) + '">' +
             '<p style="font-size:.85rem;font-weight:600;margin:.5rem 0 .3rem;">&#128196; ' + escapeHtml(_sfLbl) + '</p>' +
             '<div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">' +
               '<label class="rrp-btn secondary" style="cursor:pointer;padding:.3rem .7rem;font-size:.83rem;">' +
@@ -3748,13 +3696,13 @@
           '</div>';
         }
         return '<div class="rrp-stage-block ' + statusClass + '">' +
-          '<div class="rrp-stage-header"><strong>' + escapeHtml(stage.stageName) + '</strong>' +
+          '<div class="rrp-stage-header"><strong>' + escapeHtml(stageName) + '</strong>' +
             '<span class="rrp-stage-status">' + statusLabel + '</span>' +
             (dl.deadline ? '<span class="rrp-deadline-badge">Due: ' + escapeHtml(new Date(dl.deadline).toLocaleDateString()) + '</span>' +
               '<button type="button" class="rrp-btn secondary rrp-btn-sm rrp-cal-btn" style="margin-left:.3rem;padding:.1rem .35rem;" ' +
               'data-cal-deadline="' + escapeHtml(dl.deadline || '') + '" ' +
-              'data-cal-title="' + escapeHtml('Review Deadline: ' + (stage.stageName || '') + ' \u2013 ' + (sub.title || sub.id || '')) + '" ' +
-              'data-cal-desc="' + escapeHtml('Submission ID: ' + (sub.id || '') + '\nStage: ' + (stage.stageName || '')) + '" ' +
+              'data-cal-title="' + escapeHtml('Review Deadline: ' + (stageName || '') + ' \u2013 ' + (sub.title || sub.id || '')) + '" ' +
+              'data-cal-desc="' + escapeHtml('Submission ID: ' + (sub.id || '') + '\nStage: ' + (stageName || '')) + '" ' +
               'title="Add to calendar">📅</button>' : '') +
           '</div>' +
           (reviewerRows ? '<ul class="rrp-reviewer-decisions">' + reviewerRows + '</ul>' : '') +
@@ -3839,48 +3787,9 @@
         // ── Review Progress (or gated status for submitters) ────────────────────
         (isGatedReview && isSubmitter && !isAdmin ? (function () {
           var rel = sub.latestGatedRelease;
-          // Build student-facing stage timeline: show stage names + reviewer names + status.
-          // decisions/feedback are stripped by the server; we derive a simple status indicator.
-          var stages = sub.reviewStages || [];
-          var studentStagesHtml = stages.map(function (stage, stageIndex) {
-            var skipped = stage.skipped || false;
-            var reviewers = stage.reviewers || [];
-            var statusClass, statusLabel;
-            if (skipped) {
-              statusClass = 'rrp-stage-skipped'; statusLabel = 'Skipped';
-            } else if (reviewers.length === 0) {
-              statusClass = 'rrp-stage-not-started'; statusLabel = 'Pending';
-            } else if (sub.status === 'Revision Required' && (stage.stageCompleted || stage.gatekeeperNotifiedAt)) {
-              // Chair released Revision Required after committee review — all completed stages reflect this
-              statusClass = 'rrp-stage-revision'; statusLabel = 'Revision Requested';
-            } else if (stageIndex === 0 && stage.stageCompleted) {
-              // Gatekeeper/primary reviewer approved — forwarded to higher stage
-              statusClass = 'rrp-stage-approved'; statusLabel = 'Forwarded to Higher Stage Review';
-            } else if (stage.gatekeeperNotifiedAt) {
-              // Higher stage complete, awaiting gatekeeper release
-              statusClass = 'rrp-stage-approved'; statusLabel = 'Review Complete — Awaiting Primary Reviewer';
-            } else if (stageIndex === 0 && sub.status === 'Revision Required') {
-              // Chair voted Needs Revision at stage 0 without forwarding to committee
-              statusClass = 'rrp-stage-revision'; statusLabel = 'Revision Requested';
-            } else {
-              statusClass = 'rrp-stage-pending'; statusLabel = 'Under Review';
-            }
-            var reviewerList = reviewers.map(function (r) {
-              return '<li>' + escapeHtml(r.name || r.email || 'Reviewer') + '</li>';
-            }).join('');
-            return '<div class="rrp-stage-block ' + statusClass + '">' +
-              '<div class="rrp-stage-header"><strong>' + escapeHtml(stage.stageName) + '</strong>' +
-                '<span class="rrp-stage-status">' + statusLabel + '</span>' +
-              '</div>' +
-              (reviewerList ? '<ul class="rrp-reviewer-decisions">' + reviewerList + '</ul>' : '') +
-            '</div>';
-          }).join('');
+          // stagesHtml already uses computedStages with student-appropriate labels/visibility
           var html = '<div class="rrp-detail-section"><h3>&#128272; Review Status</h3>';
-          if (!studentStagesHtml) {
-            html += '<p style="color:var(--rrp-text-muted);">Your submission is currently under committee review. The primary reviewer will share the outcome with you once it is available.</p>';
-          } else {
-            html += studentStagesHtml;
-          }
+          html += stagesHtml || '<p style="color:var(--rrp-text-muted);">Your submission is currently under committee review. The primary reviewer will share the outcome with you once it is available.</p>';
           if (rel) {
             var cls = rel.decision === 'Approved' ? 'rrp-dec-approved' : (rel.decision === 'Rejected' ? 'rrp-dec-rejected' : 'rrp-dec-revision');
             html += '<h3 style="margin-top:1rem;">Decision from Primary Reviewer</h3>' +
@@ -4038,54 +3947,22 @@
               '</div>'
             : '<p style="color:var(--rrp-text-muted);font-size:.88rem;">No meeting requests yet.</p>';
 
-          var _anyHigherStageComplete = (sub.reviewStages || []).slice(1).some(function (s) {
-            if (s.skipped) return false;
-            if (s.gatekeeperNotifiedAt) return true;
-            // Fallback for legacy data: all reviewers have a non-empty decision recorded
-            var reviewers = s.reviewers || [];
-            if (!reviewers.length) return false;
-            var decisions = s.decisions || {};
-            return reviewers.every(function (r) {
-              var key = (r.email || '').toLowerCase().trim();
-              return key && !!decisions[key];
-            });
-          });
-          function _isHigherStageComplete(s) {
-            if (!s || s.skipped) return false;
-            if (s.gatekeeperNotifiedAt) return true;
-            var reviewers = s.reviewers || [];
-            if (!reviewers.length) return false;
-            var decisions = s.decisions || {};
-            return reviewers.every(function (r) {
-              var key = (r.email || '').toLowerCase().trim();
-              return key && !!decisions[key];
-            });
-          }
-          var _completedHigherStage = _anyHigherStageComplete
-            ? (sub.reviewStages || []).slice(1).find(function (s) { return _isHigherStageComplete(s); })
-            : null;
+          var _releaseEnabled  = !!(sub.pendingRelease);
           var _alreadyReleased = !!(sub.gatedReleases && sub.gatedReleases.length > 0);
-          var _lastRelease = _alreadyReleased ? sub.gatedReleases[sub.gatedReleases.length - 1] : null;
-          var _lastReleaseTs = _lastRelease ? new Date(_lastRelease.releasedAt || 0).getTime() : 0;
-          var _newReviewAfterRelease = _alreadyReleased && (sub.reviewStages || []).slice(1).some(function (s) {
-            if (s.skipped || !s.gatekeeperNotifiedAt) return false;
-            return new Date(s.gatekeeperNotifiedAt).getTime() > _lastReleaseTs;
-          });
-          var _releaseEnabled = _anyHigherStageComplete && (!_alreadyReleased || _newReviewAfterRelease);
+          var _lastRelease     = _alreadyReleased ? sub.gatedReleases[sub.gatedReleases.length - 1] : null;
           return '<div id="rrp-gated-controls" class="rrp-detail-section">' +
             '<h3>&#128272; Gated Review Controls</h3>' +
             (_releaseEnabled
               ? '<div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:.5rem;padding:.6rem .9rem;margin-bottom:.75rem;display:flex;align-items:flex-start;gap:.5rem;">' +
                   '<span style="font-size:1.1rem;">&#9888;&#65039;</span>' +
-                  '<div><strong>Action required:</strong> ' +
-                    escapeHtml((_completedHigherStage && _completedHigherStage.stageName ? _completedHigherStage.stageName : 'Higher stage') + ' review is complete.') +
+                  '<div><strong>Action required:</strong> Higher stage review is complete.' +
                     ' Please review their comments and release your decision to the submitter.' +
                   '</div>' +
                 '</div>'
-              : !_anyHigherStageComplete
+              : !_alreadyReleased
               ? '<p style="color:var(--rrp-text-muted);font-size:.88rem;margin-bottom:.75rem;">&#8987; Release will be available once at least one higher-stage review is complete.</p>'
               : '') +
-            (_alreadyReleased && !_newReviewAfterRelease
+            (_alreadyReleased && !_releaseEnabled
               ? '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:.5rem;padding:.6rem .9rem;margin-bottom:.75rem;">' +
                   '<strong style="color:#15803d;">&#10003; Decision already released:</strong> ' +
                   escapeHtml((_lastRelease && _lastRelease.decision) || '') +
@@ -5540,7 +5417,7 @@
                   '<div style="flex:1;min-width:0;">' +
                     '<div class="rrp-sub-item-header">' +
                       '<strong>' + escapeHtml(s.title || 'Untitled') + '</strong>' +
-                      '<span class="rrp-decision-badge ' + statusBadgeCls(s.status) + '">' + escapeHtml(s.status || '—') + '</span>' +
+                      '<span class="rrp-decision-badge ' + (s.workflowStatusClass || statusBadgeCls(s.status)) + '">' + escapeHtml(s.status || '—') + '</span>' +
                     '</div>' +
                     '<div class="rrp-sub-item-meta">' +
                       '<span class="rrp-meta-id"><span class="rrp-meta-lbl">ID</span>' + escapeHtml(s.id) + '</span>' +
@@ -6135,11 +6012,110 @@
 
       Promise.all([
         api('GET', '/workflow-stages'),
-        api('GET', '/config').catch(function () { return {}; })
+        api('GET', '/config').catch(function () { return {}; }),
+        api('GET', '/config/workflow-schema').catch(function () { return {}; })
       ]).then(function (stRes) {
         var allStages = (stRes[0] && stRes[0].workflowStages) ? stRes[0].workflowStages : [];
         var cfg       = stRes[1] || {};
+        var schema    = stRes[2] || {};
         var curDays   = (isEdit && cfg.stageDueDays && cfg.stageDueDays[typeObj.id]) ? cfg.stageDueDays[typeObj.id] : {};
+
+      // ── Workflow Engine editor HTML builder ─────────────────────────────
+      function buildWfEditorHtml() {
+        var wfObj      = (isEdit && typeObj && typeObj.workflow) ? typeObj.workflow : null;
+        var wfStages   = (wfObj && Array.isArray(wfObj.stages)) ? wfObj.stages : [];
+        var stageNames = (isEdit && Array.isArray(typeObj.stages)) ? typeObj.stages : [];
+        var roles      = schema.stageRoles    || ['gatekeeper', 'committee', 'advisory'];
+        var rules      = schema.decisionRules  || ['unanimous', 'majority', 'single'];
+        var defDecs    = schema.defaultDecisions || ['Approved', 'Needs Revision', 'Rejected', 'Pending'];
+        var finalMap   = (wfObj && wfObj.finalStatusByDecision) ? wfObj.finalStatusByDecision : {};
+        var studVis    = (wfObj && wfObj.studentVisibility) ? wfObj.studentVisibility : {};
+
+        var stageRowsHtml = stageNames.length ? stageNames.map(function (sname, i) {
+          var eStage   = wfStages.find(function (s) { return s.name === sname; }) || {};
+          var role     = eStage.role        || (i === 0 ? 'gatekeeper' : 'committee');
+          var rule     = eStage.decisionRule || (i === 0 ? 'single' : 'unanimous');
+          var decs     = (eStage.decisions  || defDecs.slice(0, 3)).join(', ');
+          var relCh    = (typeof eStage.releaseChannel !== 'undefined') ? eStage.releaseChannel : (i === 0);
+          return '<div class="rrp-wf-stage-row" data-stage="' + escapeHtml(sname) + '" ' +
+            'style="display:grid;grid-template-columns:1fr auto auto 1fr auto;align-items:end;gap:.5rem;' +
+            'padding:.5rem .6rem;border:1px solid #e5e7eb;border-radius:.35rem;margin-bottom:.35rem;background:#fff;">' +
+            '<label style="margin:0;"><small style="color:#6b7280;display:block;margin-bottom:.15rem;">Stage</small>' +
+              '<strong style="font-size:.88rem;">' + escapeHtml(sname) + '</strong>' +
+            '</label>' +
+            '<label style="margin:0;"><small style="color:#6b7280;display:block;margin-bottom:.15rem;">Role</small>' +
+              '<select class="rrp-input rrp-wf-role" style="padding:.25rem .4rem;font-size:.83rem;">' +
+              roles.map(function (r) { return '<option value="' + r + '"' + (r === role ? ' selected' : '') + '>' + r + '</option>'; }).join('') +
+              '</select>' +
+            '</label>' +
+            '<label style="margin:0;"><small style="color:#6b7280;display:block;margin-bottom:.15rem;">Decision Rule</small>' +
+              '<select class="rrp-input rrp-wf-rule" style="padding:.25rem .4rem;font-size:.83rem;">' +
+              rules.map(function (r) { return '<option value="' + r + '"' + (r === rule ? ' selected' : '') + '>' + r + '</option>'; }).join('') +
+              '</select>' +
+            '</label>' +
+            '<label style="margin:0;"><small style="color:#6b7280;display:block;margin-bottom:.15rem;">Decisions (comma-separated)</small>' +
+              '<input class="rrp-input rrp-wf-decs" value="' + escapeHtml(decs) + '" style="font-size:.83rem;" />' +
+            '</label>' +
+            '<label style="margin:0;display:flex;align-items:center;gap:.3rem;padding-bottom:.15rem;">' +
+              '<input type="checkbox" class="rrp-wf-release"' + (relCh ? ' checked' : '') + '>' +
+              '<small style="white-space:nowrap;">Release<br>channel</small>' +
+            '</label>' +
+          '</div>';
+        }).join('') :
+          '<p style="color:#6b7280;font-size:.85rem;margin:.25rem 0;">Add and save stages above first, then re-open to configure per-stage workflow settings.</p>';
+
+        // finalStatusByDecision rows (for decisions found across all stages)
+        var allDecs = [];
+        wfStages.forEach(function (s) { (s.decisions || defDecs.slice(0,3)).forEach(function (d) {
+          if (allDecs.indexOf(d) === -1) allDecs.push(d);
+        }); });
+        if (!allDecs.length) allDecs = defDecs.slice(0, 3);
+        var finalRowsHtml = allDecs.map(function (dec) {
+          var val = finalMap[dec] || '';
+          return '<div style="display:flex;align-items:center;gap:.5rem;margin:.2rem 0;">' +
+            '<span style="min-width:9rem;font-size:.85rem;">' + escapeHtml(dec) + '</span>' +
+            '<span style="color:#9ca3af;">&rarr;</span>' +
+            '<input class="rrp-input rrp-wf-final-status" data-decision="' + escapeHtml(dec) + '" ' +
+              'value="' + escapeHtml(val) + '" placeholder="(same as decision label)" style="flex:1;font-size:.83rem;" />' +
+          '</div>';
+        }).join('');
+
+        // requiredFields checkboxes
+        var knownFields = [
+          { id: 'title',                  label: 'Title' },
+          { id: 'submitterName',          label: 'Submitter name' },
+          { id: 'submitterEmail',         label: 'Email' },
+          { id: 'affiliation',            label: 'Affiliation' },
+          { id: 'abstract',               label: 'Abstract' },
+          { id: 'keywords',               label: 'Keywords' },
+          { id: 'researchArea',           label: 'Research area' },
+          { id: 'presentationPreference', label: 'Presentation preference' },
+        ];
+        var curReqFields = (isEdit && Array.isArray(typeObj.requiredFields)) ? typeObj.requiredFields : [];
+        var reqHtml = knownFields.map(function (f) {
+          var chk = curReqFields.indexOf(f.id) !== -1 ? ' checked' : '';
+          return '<label style="display:flex;align-items:center;gap:.35rem;font-size:.84rem;margin:.15rem .5rem .15rem 0;">' +
+            '<input type="checkbox" class="rrp-wf-req-field" value="' + f.id + '"' + chk + '> ' + f.label +
+          '</label>';
+        }).join('');
+
+        return '<div id="rrp-wf-editor" style="margin-top:.6rem;padding:.75rem;border:1px solid #dbeafe;' +
+            'border-radius:.5rem;background:#f0f7ff;">' +
+          '<h4 style="margin:0 0 .3rem;font-size:.9rem;color:#1e40af;">&#128295; Workflow Engine Configuration</h4>' +
+          '<p style="font-size:.8rem;color:#6b7280;margin:0 0 .6rem;">Per-stage role, decision rule, and release settings. ' +
+            'Saved to the type&#8217;s <code>workflow</code> config block. Changes take effect on next submission load.</p>' +
+          '<div style="margin-bottom:.5rem;">' + stageRowsHtml + '</div>' +
+          (stageNames.length ?
+            '<details style="margin-top:.6rem;"><summary style="cursor:pointer;font-size:.84rem;color:#374151;font-weight:600;">Final status labels by decision</summary>' +
+            '<div style="margin-top:.4rem;padding:.5rem;background:#fff;border:1px solid #e5e7eb;border-radius:.35rem;">' + finalRowsHtml + '</div>' +
+            '</details>' +
+            '<details style="margin-top:.4rem;"><summary style="cursor:pointer;font-size:.84rem;color:#374151;font-weight:600;">Required submission fields</summary>' +
+            '<div style="margin-top:.4rem;padding:.5rem;background:#fff;border:1px solid #e5e7eb;border-radius:.35rem;">' +
+            '<p style="font-size:.8rem;color:#6b7280;margin:0 0 .35rem;">When set, these fields replace the built-in per-type validation rules for this submission type.</p>' +
+            '<div style="display:flex;flex-wrap:wrap;">' + reqHtml + '</div>' +
+            '</div></details>' : '') +
+        '</div>';
+      }
 
       container.innerHTML =
         '<div class="rrp-dashboard">' +
@@ -6178,6 +6154,9 @@
                 '<input type="checkbox" id="rrp-st-gated-review"' + (isEdit && typeObj.gatedReview ? ' checked' : '') + '>' +
                 '<span>&#128272; <strong>Gated Review Mode</strong> <small style="font-weight:400;color:#6b7280;">&mdash; Stage 1 reviewer acts as the primary conduit. Higher-stage feedback is hidden from the submitter until Stage 1 releases a consolidated decision. Enables internal coordination messages and meeting requests between reviewers.</small></span>' +
               '</label>' +
+              '<div id="rrp-wf-wrap" style="' + (isEdit && typeObj.gatedReview ? '' : 'display:none;') + 'margin-left:.1rem;">' +
+                buildWfEditorHtml() +
+              '</div>' +
               '<label class="rrp-label" style="margin-top:.5rem;display:flex;align-items:center;gap:.6rem;">' +
                 '<span style="white-space:nowrap;font-size:.88rem;color:#4b5563;">Abstract-only stages:</span>' +
                 '<input type="number" class="rrp-input" id="rrp-st-abstract-stages" min="1" max="10" value="' + (isEdit ? (typeObj.abstractOnlyStages || 1) : 1) + '" style="width:5rem;" />' +
@@ -6199,6 +6178,11 @@
 
       document.getElementById('rrp-st-form-back').addEventListener('click', renderList);
       document.getElementById('rrp-st-cancel-btn').addEventListener('click', renderList);
+
+      // Toggle workflow editor visibility with the gatedReview checkbox
+      document.getElementById('rrp-st-gated-review').addEventListener('change', function () {
+        document.getElementById('rrp-wf-wrap').style.display = this.checked ? '' : 'none';
+      });
 
       var stagesWrap = document.getElementById('rrp-st-stages-wrap');
       bindStagesEditor(stagesWrap);
@@ -6233,6 +6217,38 @@
         payload.abstractOnlyStages = parseInt(document.getElementById('rrp-st-abstract-stages').value, 10) || 1;
         payload.allowMeetings = document.getElementById('rrp-st-allow-meetings').checked;
         payload.gatedReview = document.getElementById('rrp-st-gated-review').checked;
+
+        // Read workflow engine config if gated review is enabled
+        if (payload.gatedReview) {
+          var wfWrap     = document.getElementById('rrp-wf-wrap');
+          var wfRows     = wfWrap ? wfWrap.querySelectorAll('.rrp-wf-stage-row') : [];
+          var wfStages   = [];
+          wfRows.forEach(function (row) {
+            var sname = row.getAttribute('data-stage');
+            var role  = row.querySelector('.rrp-wf-role').value;
+            var rule  = row.querySelector('.rrp-wf-rule').value;
+            var decsRaw = row.querySelector('.rrp-wf-decs').value;
+            var decs  = decsRaw.split(',').map(function (d) { return d.trim(); }).filter(Boolean);
+            var relCh = row.querySelector('.rrp-wf-release').checked;
+            wfStages.push({ name: sname, role: role, decisionRule: rule, decisions: decs, releaseChannel: relCh });
+          });
+          var finalMap = {};
+          if (wfWrap) {
+            wfWrap.querySelectorAll('.rrp-wf-final-status').forEach(function (inp) {
+              var dec = inp.getAttribute('data-decision');
+              if (dec && inp.value.trim()) finalMap[dec] = inp.value.trim();
+            });
+          }
+          payload.workflow = { stages: wfStages, finalStatusByDecision: finalMap };
+          // Required fields
+          var reqFields = [];
+          if (wfWrap) {
+            wfWrap.querySelectorAll('.rrp-wf-req-field:checked').forEach(function (cb) {
+              reqFields.push(cb.value);
+            });
+          }
+          if (reqFields.length) payload.requiredFields = reqFields;
+        }
 
         api('PATCH', '/submission-types/' + encodeURIComponent(idVal), payload)
           .then(function () {

@@ -8,10 +8,12 @@ client.connect('rcgapimtest.eastus2.cloudapp.azure.com',
 sftp = client.open_sftp()
 base = '/var/www/html/wp-content/plugins/research-review-portal'
 files = [
-    ('includes/class-portal-rest.php', base + '/includes/class-portal-rest.php'),
-    ('includes/class-portal-data.php', base + '/includes/class-portal-data.php'),
-    ('assets/portal.js',               base + '/assets/portal.js'),
-    ('assets/portal.css',              base + '/assets/portal.css'),
+    ('includes/class-portal-rest.php',       base + '/includes/class-portal-rest.php'),
+    ('includes/class-portal-data.php',        base + '/includes/class-portal-data.php'),
+    ('includes/class-workflow-engine.php',    base + '/includes/class-workflow-engine.php'),
+    ('research-review-portal.php',            base + '/research-review-portal.php'),
+    ('assets/portal.js',                      base + '/assets/portal.js'),
+    ('assets/portal.css',                     base + '/assets/portal.css'),
 ]
 for local, remote in files:
     sftp.put(local, remote)

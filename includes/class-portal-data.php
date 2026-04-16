@@ -248,6 +248,36 @@ class Portal_Data {
 		if ( $is_draft ) {
 			return array();
 		}
+		// Config-driven validation: if the submission type defines requiredFields,
+		// use those instead of the hardcoded switch block below.
+		$config = self::read_config();
+		foreach ( $config['submissionTypes'] ?? array() as $st ) {
+			if ( ( $st['id'] ?? '' ) === $type && isset( $st['requiredFields'] ) && is_array( $st['requiredFields'] ) ) {
+				$errors      = array();
+				$field_labels = array(
+					'title'                   => 'Title',
+					'submitterName'           => 'Submitter name',
+					'submitterEmail'          => 'Email',
+					'affiliation'             => 'Affiliation',
+					'abstract'                => 'Abstract',
+					'keywords'                => 'Keywords',
+					'researchArea'            => 'Research area',
+					'presentationPreference'  => 'Presentation preference',
+				);
+				foreach ( $st['requiredFields'] as $field ) {
+					if ( empty( trim( (string) ( $body[ $field ] ?? '' ) ) ) ) {
+						$label     = $field_labels[ $field ] ?? ucwords( str_replace( array( '_', '-' ), ' ', (string) $field ) );
+						$errors[]  = $label . ' is required.';
+					}
+				}
+				// Universal title-length cap regardless of field list.
+				if ( in_array( 'title', $st['requiredFields'], true ) && strlen( (string) ( $body['title'] ?? '' ) ) > 200 ) {
+					$errors[] = 'Title must be 200 characters or less.';
+				}
+				return $errors;
+			}
+		}
+		// Legacy hardcoded per-type validation (used when no requiredFields config exists).
 		$errors = array();
 		switch ( $type ) {
 			case 'conference':
@@ -597,10 +627,18 @@ class Portal_Data {
 		return $submission;
 	}
 
-	public static function is_stage_approved( $stage ) {
+	public static function is_stage_approved( $stage, $submission = null, $stage_idx = null ) {
 		if ( empty( $stage['reviewers'] ) || ! is_array( $stage['reviewers'] ) ) {
 			return false;
 		}
+		// Use the workflow engine when a submission + stage index are provided and a workflow config exists.
+		if ( $submission !== null && $stage_idx !== null ) {
+			$_wf = Workflow_Engine::get_workflow_for_submission( $submission );
+			if ( $_wf !== null ) {
+				return Workflow_Engine::is_stage_approved( $stage, $_wf, $stage_idx );
+			}
+		}
+		// Legacy path: unanimous approval only.
 		$decisions = isset( $stage['decisions'] ) && is_array( $stage['decisions'] ) ? $stage['decisions'] : array();
 		foreach ( $stage['reviewers'] as $r ) {
 			$em = strtolower( trim( (string) ( $r['email'] ?? '' ) ) );
@@ -624,6 +662,17 @@ class Portal_Data {
 		if ( in_array( $status, $preserved, true ) ) {
 			return $status;
 		}
+
+		// ── Workflow Engine path (Phase 2+) ─────────────────────────────────────
+		// If the submission type has a config-defined workflow, delegate entirely.
+		$_wf = Workflow_Engine::get_workflow_for_submission( $submission );
+		if ( $_wf !== null ) {
+			$_engine_status = Workflow_Engine::derive_status( $submission, $_wf );
+			if ( $_engine_status !== null ) {
+				return $_engine_status;
+			}
+		}
+		// ── End Workflow Engine path ─────────────────────────────────────────────
 
 		$active_stages = array_filter( $stages, function ( $s ) { return ! ( $s['skipped'] ?? false ); } );
 		if ( empty( $active_stages ) ) {
@@ -696,13 +745,20 @@ class Portal_Data {
 				? $submission['gatedReleases'] : array();
 			$_release_superseded = false;
 			if ( ! empty( $_releases ) ) {
-				$_last_rel    = end( $_releases );
-				$_rel_ts      = isset( $_last_rel['releasedAt'] ) ? strtotime( (string) $_last_rel['releasedAt'] ) : 0;
-				// stage 0 revisionSubmittedAt is stamped every time a new revision is submitted
-				$_s0_rev_at   = $_gk_stage['revisionSubmittedAt'] ?? '';
-				$_s0_rev_ts   = $_s0_rev_at ? strtotime( (string) $_s0_rev_at ) : 0;
-				if ( $_s0_rev_ts > 0 && $_rel_ts > 0 && $_s0_rev_ts > $_rel_ts ) {
-					$_release_superseded = true; // new revision submitted after this release
+				$_last_rel      = end( $_releases );
+				$_current_round = (int) ( $submission['currentRound'] ?? 0 );
+				// If the release carries a round stamp, compare integers — fast and unambiguous.
+				// Fall back to timestamp comparison only for older releases that predate Phase 1.
+				if ( isset( $_last_rel['round'] ) ) {
+					$_release_superseded = (int) $_last_rel['round'] < $_current_round;
+				} else {
+					// Legacy path: compare releasedAt vs stage-0 revisionSubmittedAt timestamps.
+					$_rel_ts    = isset( $_last_rel['releasedAt'] ) ? strtotime( (string) $_last_rel['releasedAt'] ) : 0;
+					$_s0_rev_at = $_gk_stage['revisionSubmittedAt'] ?? '';
+					$_s0_rev_ts = $_s0_rev_at ? strtotime( (string) $_s0_rev_at ) : 0;
+					if ( $_s0_rev_ts > 0 && $_rel_ts > 0 && $_s0_rev_ts > $_rel_ts ) {
+						$_release_superseded = true;
+					}
 				}
 			}
 			if ( ! empty( $_releases ) && ! $_release_superseded ) {
