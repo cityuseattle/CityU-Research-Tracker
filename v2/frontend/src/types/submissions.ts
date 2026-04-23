@@ -33,6 +33,7 @@ export interface Program {
 export type SubmissionStatus =
   | 'DRAFT'
   | 'SUBMITTED'
+  | 'RESUBMITTED'
   | 'AWAITING_REVIEWERS'
   | 'IN_REVIEW'
   | 'REVISION_REQUIRED'
@@ -64,6 +65,10 @@ export interface SubmissionListItem {
   submitter: { id: string; name: string; email: string }
   created_at: string
   updated_at: string
+  /** The review stage this submission is currently in (null when not in review). */
+  current_stage: { id: string; name: string } | null
+  /** When the submission entered the current_stage. */
+  current_stage_entered_at: string | null
 }
 
 export interface Submission extends SubmissionListItem {
@@ -75,6 +80,7 @@ export interface Submission extends SubmissionListItem {
     allowed_extensions: string[]
     max_file_size_mb: number
     max_files: number
+    is_gated_review?: boolean
   }) | null
 }
 
@@ -98,7 +104,7 @@ export interface SubmissionReviewer {
   id: string
   submission_id: string
   stage_id: string
-  stage: { id: string; name: string; stage_role_label: string; order: number } | null
+  stage: { id: string; name: string; stage_role_label: string; order: number; is_gatekeeper: boolean } | null
   user_id: string
   user: { id: string; name: string; email: string; org_role: string | null } | null
   assigned_by: string | null
@@ -108,6 +114,16 @@ export interface SubmissionReviewer {
   decision: 'approve' | 'reject' | 'revise' | null
   decision_at: string | null
   comments: string | null
+  // Extension request
+  extension_status: 'pending' | 'approved' | 'rejected' | null
+  extension_reason: string | null
+  extension_requested_days: number | null
+  extension_requested_at: string | null
+  extension_resolved_at: string | null
+  // Conflict of interest
+  conflict_flagged: boolean
+  conflict_reason: string | null
+  conflict_flagged_at: string | null
 }
 
 export interface SubmissionAuthor {
@@ -131,6 +147,7 @@ export interface SubmissionAuthor {
 export const STATUS_LABELS: Record<SubmissionStatus, string> = {
   DRAFT:                  'Draft',
   SUBMITTED:              'Submitted',
+  RESUBMITTED:            'Revision Submitted',
   AWAITING_REVIEWERS:     'Awaiting Reviewers',
   IN_REVIEW:              'In Review',
   REVISION_REQUIRED:      'Revision Required',
@@ -146,6 +163,7 @@ export const STATUS_LABELS: Record<SubmissionStatus, string> = {
 export const STATUS_COLORS: Record<SubmissionStatus, string> = {
   DRAFT:                  'bg-gray-100 text-gray-600',
   SUBMITTED:              'bg-blue-100 text-blue-700',
+  RESUBMITTED:            'bg-indigo-100 text-indigo-700',
   AWAITING_REVIEWERS:     'bg-purple-100 text-purple-700',
   IN_REVIEW:              'bg-yellow-100 text-yellow-700',
   REVISION_REQUIRED:      'bg-orange-100 text-orange-700',
@@ -164,6 +182,7 @@ export type ActivityEventType =
   | 'created'
   | 'version_uploaded'
   | 'review_decision'
+  | 'gated_release'
   | 'system'
 
 export interface ActivityEvent {
@@ -182,10 +201,11 @@ export interface ActivityEvent {
 export interface FeedbackItem {
   id: string
   stage: { id: string; name: string; role: string } | null
-  decision: 'approve' | 'reject' | 'revise'
+  decision: 'approve' | 'reject' | 'revise' | 'ACCEPTED' | 'CONDITIONALLY_ACCEPTED' | 'REVISION_REQUIRED' | 'REJECTED'
   decision_at: string
   comments: string | null
   reviewer: { name: string } | null
+  is_gated_release?: boolean
 }
 
 // ── Appeal ────────────────────────────────────────────────────────────────────
@@ -212,12 +232,14 @@ export interface ReviewProgressStage {
   name: string
   order: number
   role_label: string
+  is_gatekeeper: boolean
   reviewers_count: number
   completed_count: number
   status: ReviewStageStatus
   outcome: 'approved' | 'revision' | 'rejected' | null
   min_approvals: number
   due_days: number | null
+  stage_due_at: string | null   // earliest reviewer due_at in this stage
   // null = blind review (hidden from this user); array = visible reviewer list
   reviewers: Array<{
     id: string
@@ -227,12 +249,23 @@ export interface ReviewProgressStage {
   }> | null
 }
 
+export type MeetingType = 'gatekeeper_student' | 'gatekeeper_reviewers' | 'reviewer_reviewer' | 'student_gatekeeper'
+
+export interface UserMeetingContext {
+  is_submitter: boolean
+  is_reviewer: boolean
+  is_gatekeeper: boolean
+  reviewer_stage_id: string | null
+  gatekeeper_stage_id: string | null
+}
+
 // ── Submission Meeting ────────────────────────────────────────────────────────
 
 export interface SubmissionMeeting {
   id: string
   submission_id: string
   stage_id: string | null
+  meeting_type: MeetingType | null
   stage: { id: string; name: string } | null
   requested_by: string
   requester: { id: string; name: string; email: string } | null
@@ -244,4 +277,38 @@ export interface SubmissionMeeting {
   meeting_link: string | null
   notes: string | null
   created_at: string
+}
+
+// ── Document Annotation ───────────────────────────────────────────────────────
+
+export interface DocumentAnnotation {
+  id: string
+  quote: string
+  comment: string
+  position_hint: string | null
+  annotator: { id: string; name: string }
+  is_mine: boolean
+  created_at: string
+}
+
+// ── Submission Message (communication tab) ────────────────────────────────────
+
+export interface SubmissionMessage {
+  id: string
+  body_html: string
+  sender: { id: string; name: string }
+  is_mine: boolean
+  created_at: string
+}
+
+// ── Calendar Deadline ─────────────────────────────────────────────────────────
+
+export interface CalendarDeadline {
+  type: 'review_due' | 'submission_review_due' | 'stage_complete'
+  date: string                // YYYY-MM-DD
+  submission_id: string
+  title: string
+  stage: string | null
+  reviewer: string | null     // only for admin/coord
+  is_completed: boolean
 }

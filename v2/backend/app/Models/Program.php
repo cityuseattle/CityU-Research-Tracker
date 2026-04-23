@@ -14,7 +14,7 @@ class Program extends Model
     protected $keyType = 'string';
     public $incrementing = false;
 
-    protected $fillable = ['name', 'school', 'program_director_id', 'group_id', 'is_active'];
+    protected $fillable = ['name', 'school', 'description', 'program_director_id', 'group_id', 'is_active'];
 
     protected function casts(): array
     {

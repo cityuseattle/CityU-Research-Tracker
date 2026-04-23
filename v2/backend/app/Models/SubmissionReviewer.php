@@ -15,15 +15,24 @@ class SubmissionReviewer extends Model
         'id', 'submission_id', 'stage_id', 'user_id', 'assigned_by',
         'status', 'due_at', 'decision', 'decision_at', 'comments',
         'reminder_sent_at',
+        // Extension request
+        'extension_reason', 'extension_requested_days', 'extension_status',
+        'extension_requested_at', 'extension_resolved_at',
+        // Conflict of interest
+        'conflict_flagged', 'conflict_reason', 'conflict_flagged_at',
     ];
 
     protected function casts(): array
     {
         return [
-            'assigned_at'       => 'datetime',
-            'decision_at'       => 'datetime',
-            'reminder_sent_at'  => 'datetime',
-            'due_at'            => 'date',
+            'assigned_at'            => 'datetime',
+            'decision_at'            => 'datetime',
+            'reminder_sent_at'       => 'datetime',
+            'extension_requested_at' => 'datetime',
+            'extension_resolved_at'  => 'datetime',
+            'conflict_flagged_at'    => 'datetime',
+            'conflict_flagged'       => 'boolean',
+            'due_at'                 => 'date',
         ];
     }
 

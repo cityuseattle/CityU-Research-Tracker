@@ -15,6 +15,8 @@ interface GatedSubmission {
   program: string | null
   current_version: number
   updated_at: string
+  pending_gatekeeper_stage_name: string | null
+  pending_gatekeeper_stage_outcome: string | null
 }
 
 interface GatedList {
@@ -55,6 +57,11 @@ interface GatedDetail {
     released_by: string | null
     released_at: string
   } | null
+  pending_gatekeeper_stage: {
+    id: string
+    name: string | null
+    outcome: string | null   // 'FAILED' | 'REVISION_REQUIRED'
+  } | null
 }
 
 // ── Status badge ─────────────────────────────────────────────────────────────
@@ -65,14 +72,18 @@ function StatusBadge({ status }: { status: string }) {
     ACCEPTED:                'bg-green-100 text-green-800',
     CONDITIONALLY_ACCEPTED:  'bg-blue-100  text-blue-800',
     REJECTED:                'bg-red-100   text-red-800',
+    REVISION_REQUIRED:       'bg-orange-100 text-orange-800',
     IN_REVIEW:               'bg-indigo-100 text-indigo-800',
+    STAGE_RECHECK:           'bg-purple-100 text-purple-800',
   }
   const label: Record<string, string> = {
-    PENDING_RELEASE:         'Pending Release',
+    PENDING_RELEASE:         'Pending Gatekeeper',
     ACCEPTED:                'Accepted',
     CONDITIONALLY_ACCEPTED:  'Cond. Accepted',
     REJECTED:                'Rejected',
+    REVISION_REQUIRED:       'Revision Required',
     IN_REVIEW:               'In Review',
+    STAGE_RECHECK:           'Stage Recheck',
   }
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${styles[status] ?? 'bg-gray-100 text-gray-700'}`}>
@@ -92,10 +103,13 @@ function ReleaseModal({
 }) {
   const qc = useQueryClient()
   const toast = useToastHelpers()
-  const [decision, setDecision]   = useState<string>('ACCEPTED')
+  const [decision, setDecision]   = useState<string>('REVISION_REQUIRED')
   const [feedback, setFeedback]   = useState('')
   const [reason,   setReason]     = useState('')
   const [mode,     setMode]       = useState<'release' | 'recheck'>('release')
+
+  const stageName    = submission.pending_gatekeeper_stage?.name ?? null
+  const stageOutcome = submission.pending_gatekeeper_stage?.outcome ?? null
 
   const releaseMut = useMutation({
     mutationFn: (body: object) => api.post('/admin/gated-reviews', body),
@@ -143,6 +157,19 @@ function ReleaseModal({
             {' '} — {submission.submitter?.name}
           </p>
 
+          {/* Stage context banner */}
+          {stageName && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm">
+              <p className="font-medium text-amber-800">
+                Stage “{stageName}” requires your decision
+              </p>
+              <p className="text-amber-700 mt-0.5">
+                Reviewers {stageOutcome === 'FAILED' ? 'rejected the submission' : 'requested changes'}.
+                Review their comments below and choose an action.
+              </p>
+            </div>
+          )}
+
           {/* Mode tabs */}
           <div className="flex gap-2">
             <button
@@ -155,7 +182,7 @@ function ReleaseModal({
               onClick={() => setMode('recheck')}
               className={`px-3 py-1.5 text-sm rounded-md font-medium ${mode === 'recheck' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
             >
-              Request Recheck
+              Return Stage for Re-review
             </button>
           </div>
 
@@ -168,10 +195,10 @@ function ReleaseModal({
                   onChange={e => setDecision(e.target.value)}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
-                  <option value="ACCEPTED">Accepted</option>
-                  <option value="CONDITIONALLY_ACCEPTED">Conditionally Accepted</option>
-                  <option value="REVISION_REQUIRED">Revision Required</option>
-                  <option value="REJECTED">Rejected</option>
+                  <option value="REVISION_REQUIRED">Request Revision from Submitter (agree with reviewers)</option>
+                  <option value="REJECTED">Reject Submission (agree with reviewers)</option>
+                  <option value="ACCEPTED">Accept Submission (override reviewers)</option>
+                  <option value="CONDITIONALLY_ACCEPTED">Conditionally Accept (override reviewers)</option>
                 </select>
               </div>
               <div>
@@ -186,15 +213,23 @@ function ReleaseModal({
               </div>
             </>
           ) : (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Reason for recheck <span className="text-red-500">*</span></label>
-              <textarea
-                value={reason}
-                onChange={e => setReason(e.target.value)}
-                rows={3}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="Explain what needs to be re-reviewed…"
-              />
+            <div className="space-y-3">
+              {stageName && (
+                <p className="text-sm text-gray-600">
+                  This will clear reviewer decisions at stage “<span className="font-medium">{stageName}</span>”
+                  {' '}and return the submission to that stage for re-review.
+                </p>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reason for re-review <span className="text-red-500">*</span></label>
+                <textarea
+                  value={reason}
+                  onChange={e => setReason(e.target.value)}
+                  rows={3}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="Explain why the reviewers\u2019 decision should be reconsidered…"
+                />
+              </div>
             </div>
           )}
         </div>
@@ -208,7 +243,7 @@ function ReleaseModal({
             disabled={isPending}
             className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
           >
-            {isPending ? 'Saving…' : mode === 'release' ? 'Issue Decision' : 'Request Recheck'}
+            {isPending ? 'Saving…' : mode === 'release' ? 'Issue Decision' : 'Return to Stage'}
           </button>
         </div>
       </div>
@@ -260,27 +295,49 @@ function GatedDetailPanel({
         {data.review_stages.length === 0 && (
           <p className="text-sm text-gray-400">No reviewer assignments found.</p>
         )}
-        {data.review_stages.map(stage => (
-          <div key={stage.stage_id} className="mb-4">
-            <p className="text-sm font-medium text-gray-800 mb-2">{stage.stage_name}</p>
-            <div className="space-y-1.5">
-              {stage.reviewers.map(r => (
-                <div key={r.reviewer_id} className="flex items-center justify-between text-sm">
-                  <span className="text-gray-600">{r.reviewer_name}</span>
-                  {r.decision ? (
-                    <span className={`font-medium text-xs px-2 py-0.5 rounded ${
-                      r.decision === 'APPROVE' ? 'bg-green-50 text-green-700' :
-                      r.decision === 'REJECT' ? 'bg-red-50 text-red-700' :
-                      'bg-amber-50 text-amber-700'
-                    }`}>{r.decision}</span>
-                  ) : (
-                    <span className="text-gray-400 text-xs">Pending</span>
-                  )}
-                </div>
-              ))}
+        {data.review_stages.map(stage => {
+          const isTriggering = data.pending_gatekeeper_stage?.id === stage.stage_id
+          return (
+            <div
+              key={stage.stage_id}
+              className={`mb-4 rounded-lg p-3 ${
+                isTriggering ? 'bg-amber-50 border border-amber-200' : 'bg-transparent'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <p className="text-sm font-medium text-gray-800">{stage.stage_name}</p>
+                {isTriggering && (
+                  <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                    {data.pending_gatekeeper_stage?.outcome === 'FAILED' ? 'Rejected' : 'Revision Requested'}
+                  </span>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                {stage.reviewers.map(r => (
+                  <div key={r.reviewer_id} className="space-y-0.5">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-gray-600">{r.reviewer_name}</span>
+                      {r.decision ? (
+                        <span className={`font-medium text-xs px-2 py-0.5 rounded ${
+                          r.decision === 'approve' || r.decision === 'APPROVE' ? 'bg-green-50 text-green-700' :
+                          r.decision === 'reject'  || r.decision === 'REJECT'  ? 'bg-red-50 text-red-700' :
+                          'bg-amber-50 text-amber-700'
+                        }`}>{r.decision}</span>
+                      ) : (
+                        <span className="text-gray-400 text-xs">Pending</span>
+                      )}
+                    </div>
+                    {r.comments && (
+                      <p className="text-xs text-gray-500 italic ml-0 pl-0 truncate" title={r.comments}>
+                        “{r.comments}”
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       {/* Existing release */}
@@ -306,7 +363,7 @@ function GatedDetailPanel({
             className="w-full py-2.5 px-4 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 flex items-center justify-center gap-2"
           >
             <CheckCircle className="h-4 w-4" />
-            Issue Release Decision
+            {data.pending_gatekeeper_stage ? 'Make Gatekeeper Decision' : 'Issue Release Decision'}
           </button>
         </div>
       )}
@@ -439,6 +496,12 @@ function SubmissionRow({
         <p className="text-xs text-gray-500 truncate mt-0.5">
           {item.submitter_name} · {item.submission_type}
         </p>
+        {item.pending_gatekeeper_stage_name && (
+          <p className="text-xs text-amber-600 truncate mt-0.5">
+            Stage: {item.pending_gatekeeper_stage_name}
+            {item.pending_gatekeeper_stage_outcome === 'FAILED' ? ' — Rejected' : ' — Revision'}
+          </p>
+        )}
         <div className="mt-1.5">
           <StatusBadge status={item.status} />
         </div>

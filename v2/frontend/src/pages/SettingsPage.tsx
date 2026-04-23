@@ -889,6 +889,7 @@ function BackupTab() {
         <div className="text-center py-12 text-gray-400 text-sm">No backups found.</div>
       ) : (
         <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
@@ -909,6 +910,7 @@ function BackupTab() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>

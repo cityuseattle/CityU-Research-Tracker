@@ -76,7 +76,7 @@ class SystemController extends Controller
     public function uploadLogo(Request $request): JsonResponse
     {
         $request->validate([
-            'logo' => ['required', 'image', 'max:2048', 'mimes:jpg,jpeg,png,svg,webp'],
+            'logo' => ['required', 'image', 'max:2048', 'mimes:jpg,jpeg,png,webp'],
         ]);
 
         $path = $request->file('logo')->store('public/logos');
@@ -214,7 +214,7 @@ class SystemController extends Controller
             return response()->json(['message' => "Test email sent to {$to}."]);
         } catch (\Exception $e) {
             Log::warning('Email test failed', ['error' => $e->getMessage()]);
-            return response()->json(['message' => 'Failed: ' . $e->getMessage()], 422);
+            return response()->json(['message' => 'Email delivery failed. Check your SMTP configuration.'], 422);
         }
     }
 
@@ -412,8 +412,8 @@ class SystemController extends Controller
                 'output'  => trim($output),
             ]);
         } catch (\Throwable $e) {
-            Log::error('Backup failed: ' . $e->getMessage());
-            return response()->json(['message' => 'Backup failed: ' . $e->getMessage()], 500);
+            Log::error('Backup failed', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return response()->json(['message' => 'Backup failed. Please check the server logs.'], 500);
         }
     }
 

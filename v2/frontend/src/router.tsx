@@ -6,6 +6,7 @@ import DashboardPage from './pages/DashboardPage'
 import PublicPage from './pages/PublicPage'
 import SubmissionsPage from './pages/SubmissionsPage'
 import ReviewsPage from './pages/ReviewsPage'
+import ReviewerAnalyticsPage from './pages/ReviewerAnalyticsPage'
 import WorkflowsPage from './pages/WorkflowsPage'
 import UsersPage from './pages/UsersPage'
 import ReportsPage from './pages/ReportsPage'
@@ -20,6 +21,11 @@ import AuditLogPage from './pages/AuditLogPage'
 import WebhooksPage from './pages/WebhooksPage'
 import GatedReviewsPage from './pages/GatedReviewsPage'
 import AppealsPage from './pages/AppealsPage'
+import CalendarPage from './pages/CalendarPage'
+import ProgramsPage from './pages/ProgramsPage'
+import ReviewManagementPage from './pages/ReviewManagementPage'
+import AnnouncementsPage from './pages/AnnouncementsPage'
+import CustomRolesPage from './pages/CustomRolesPage'
 
 export const router = createBrowserRouter(
   [
@@ -42,6 +48,7 @@ export const router = createBrowserRouter(
         { path: '/submissions/new',        element: <NewSubmissionPage /> },
         { path: '/submissions/:id',        element: <SubmissionDetailPage /> },
         { path: '/reviews',                element: <ReviewsPage /> },
+        { path: '/reviewer-analytics',     element: <ReviewerAnalyticsPage /> },
         { path: '/submission-categories',  element: <SubmissionCategoriesPage /> },
         { path: '/reviewer-assignments',    element: <ReviewerAssignmentsPage /> },
         { path: '/researcher-access',       element: <ResearcherAccessPage /> },
@@ -54,6 +61,11 @@ export const router = createBrowserRouter(
         { path: '/webhooks',               element: <WebhooksPage /> },
         { path: '/gated-reviews',          element: <GatedReviewsPage /> },
         { path: '/appeals',                element: <AppealsPage /> },
+        { path: '/calendar',               element: <CalendarPage /> },
+        { path: '/programs',               element: <ProgramsPage /> },
+        { path: '/review-management',       element: <ReviewManagementPage /> },
+        { path: '/announcements',          element: <AnnouncementsPage /> },
+        { path: '/custom-roles',           element: <CustomRolesPage /> },
       ],
     },
 

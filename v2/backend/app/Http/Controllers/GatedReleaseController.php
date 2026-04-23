@@ -15,13 +15,34 @@ class GatedReleaseController extends Controller
     // ── List ─────────────────────────────────────────────────────────────────
 
     /**
-     * GET /api/gated-reviews
+     * GET /api/admin/gated-reviews
      * Returns submissions that need a gated release decision (PENDING_RELEASE)
      * plus recently decided ones (ACCEPTED / CONDITIONALLY_ACCEPTED / REJECTED
      * with a gated_release record).
+     *
+     * Admin/coordinator: see all gated submissions.
+     * Reviewer: see only submissions where they are assigned to a gatekeeper stage.
      */
     public function index(Request $request): JsonResponse
     {
+        $user  = $request->user();
+        $roles = (array) ($user->roles ?? []);
+        $isAdminOrCoordinator = count(array_intersect($roles, ['admin', 'coordinator'])) > 0;
+
+        // Reviewers only see their own gatekeeper assignments.
+        $scopeIds = null;
+        if (!$isAdminOrCoordinator) {
+            $scopeIds = SubmissionReviewer::where('user_id', $user->id)
+                ->whereHas('stage', fn ($q) => $q->where('is_gatekeeper', true))
+                ->pluck('submission_id');
+        }
+
+        $applyScope = function ($q) use ($scopeIds) {
+            if ($scopeIds !== null) {
+                $q->whereIn('id', $scopeIds);
+            }
+        };
+
         $pending = Submission::with([
             'submitter:id,name,email',
             'submissionType:id,slug,label,is_gated_review',
@@ -29,6 +50,7 @@ class GatedReleaseController extends Controller
         ])
         ->whereHas('submissionType', fn ($q) => $q->where('is_gated_review', true))
         ->where('status', Submission::STATUS_PENDING_RELEASE)
+        ->tap($applyScope)
         ->orderBy('updated_at', 'desc')
         ->get();
 
@@ -44,6 +66,7 @@ class GatedReleaseController extends Controller
             Submission::STATUS_REJECTED,
         ])
         ->whereHas('gatedReleases')
+        ->tap($applyScope)
         ->orderBy('updated_at', 'desc')
         ->limit(20)
         ->get();
@@ -57,6 +80,8 @@ class GatedReleaseController extends Controller
             'program'         => $s->program?->name,
             'current_version' => $s->current_version,
             'updated_at'      => $s->updated_at,
+            'pending_gatekeeper_stage_name'    => ($s->metadata ?? [])['pending_gatekeeper_stage_name'] ?? null,
+            'pending_gatekeeper_stage_outcome' => ($s->metadata ?? [])['pending_gatekeeper_stage_outcome'] ?? null,
         ];
 
         return response()->json([
@@ -68,11 +93,19 @@ class GatedReleaseController extends Controller
     // ── Detail ────────────────────────────────────────────────────────────────
 
     /**
-     * GET /api/gated-reviews/{submissionId}
+     * GET /api/admin/gated-reviews/{submissionId}
      * Full submission detail with reviewer decisions and any gated release record.
+     * Reviewers may only view submissions they are assigned to as gatekeeper.
      */
     public function show(string $submissionId): JsonResponse
     {
+        $user  = request()->user();
+        $roles = (array) ($user->roles ?? []);
+        if (!count(array_intersect($roles, ['admin', 'coordinator'])) &&
+            !$this->canAccessGatedRelease($user, $roles, $submissionId)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
         $submission = Submission::with([
             'submitter:id,name,email,organization',
             'submissionType:id,slug,label,is_gated_review',
@@ -147,6 +180,11 @@ class GatedReleaseController extends Controller
                 'released_by' => $latestRelease->releasedBy?->name,
                 'released_at' => $latestRelease->released_at,
             ] : null,
+            'pending_gatekeeper_stage' => isset(($submission->metadata ?? [])['pending_gatekeeper_stage_id']) ? [
+                'id'      => $submission->metadata['pending_gatekeeper_stage_id'],
+                'name'    => $submission->metadata['pending_gatekeeper_stage_name'] ?? null,
+                'outcome' => $submission->metadata['pending_gatekeeper_stage_outcome'] ?? null,
+            ] : null,
             'updated_at'      => $submission->updated_at,
         ]);
     }
@@ -154,36 +192,50 @@ class GatedReleaseController extends Controller
     // ── Issue release ─────────────────────────────────────────────────────────
 
     /**
-     * POST /api/gated-reviews
+     * POST /api/admin/gated-reviews
      * Issue a gated release decision. Body: { submission_id, decision, feedback? }
+     * Reviewers may only act on submissions they are assigned to as gatekeeper.
      */
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
             'submission_id' => ['required', 'uuid'],
-            'decision'      => ['required', 'in:ACCEPTED,CONDITIONALLY_ACCEPTED,REVISION_REQUIRED,REJECTED'],
-            'feedback'      => ['nullable', 'string', 'max:5000'],
+            'decision'      => ['required', 'in:REVISION_REQUIRED'],
+            'feedback'      => ['required', 'string', 'max:5000'],
         ]);
+
+        $user  = $request->user();
+        $roles = (array) ($user->roles ?? []);
+        if (!count(array_intersect($roles, ['admin', 'coordinator'])) &&
+            !$this->canAccessGatedRelease($user, $roles, $data['submission_id'])) {
+            return response()->json(['message' => 'Forbidden. Only the assigned gatekeeper or admin can issue a release decision.'], 403);
+        }
 
         $submission = Submission::whereHas('submissionType', fn ($q) => $q->where('is_gated_review', true))
             ->where('status', Submission::STATUS_PENDING_RELEASE)
             ->findOrFail($data['submission_id']);
 
-        // Map gated decision → submission status
-        $statusMap = [
-            GatedRelease::DECISION_ACCEPTED               => Submission::STATUS_ACCEPTED,
-            GatedRelease::DECISION_CONDITIONALLY_ACCEPTED => Submission::STATUS_CONDITIONALLY_ACCEPTED,
-            GatedRelease::DECISION_REVISION_REQUIRED      => Submission::STATUS_REVISION_REQUIRED,
-            GatedRelease::DECISION_REJECTED               => Submission::STATUS_REJECTED,
-        ];
-        $newStatus = $statusMap[$data['decision']];
+        // Gatekeeper can only send consolidated feedback to the submitter.
+        // Accepting / rejecting outright is not permitted — all stages must
+        // pass on their own merits for auto-acceptance, or the gatekeeper
+        // sends back for re-review via the recheck endpoint.
+        $newStatus = Submission::STATUS_REVISION_REQUIRED;
+
+        // Clear gatekeeper pending metadata now that a decision is being issued.
+        $metadata = $submission->metadata ?? [];
+        unset(
+            $metadata['pending_gatekeeper_stage_id'],
+            $metadata['pending_gatekeeper_stage_name'],
+            $metadata['pending_gatekeeper_stage_outcome']
+        );
+        $submission->update(['metadata' => $metadata]);
 
         $release = GatedRelease::create([
             'submission_id'   => $submission->id,
-            'workflow_run_id' => $submission->id, // simplified — reuse submission id as placeholder
+            'workflow_run_id' => null,
             'version_number'  => $submission->current_version,
-            'decision'        => $data['decision'],
-            'feedback'        => $data['feedback'] ?? null,
+            'decision'        => GatedRelease::DECISION_REVISION_REQUIRED,
+            'feedback'        => $data['feedback'],
             'released_by'     => $request->user()->id,
             'released_at'     => now(),
         ]);
@@ -216,12 +268,21 @@ class GatedReleaseController extends Controller
     // ── Recheck ───────────────────────────────────────────────────────────────
 
     /**
-     * POST /api/gated-reviews/{submissionId}/recheck
-     * Request re-check — resets back to IN_REVIEW so reviewers can reconsider.
+     * POST /api/admin/gated-reviews/{submissionId}/recheck
+     * Gatekeeper disagrees with reviewer decisions — resets that stage's reviewer
+     * decisions so reviewers can reconsider, then returns submission to IN_REVIEW.
      * Body: { reason }
+     * Reviewers may only act on submissions they are assigned to as gatekeeper.
      */
     public function recheck(Request $request, string $submissionId): JsonResponse
     {
+        $user  = $request->user();
+        $roles = (array) ($user->roles ?? []);
+        if (!count(array_intersect($roles, ['admin', 'coordinator'])) &&
+            !$this->canAccessGatedRelease($user, $roles, $submissionId)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
         $data = $request->validate([
             'reason' => ['required', 'string', 'max:2000'],
         ]);
@@ -230,19 +291,185 @@ class GatedReleaseController extends Controller
             ->where('status', Submission::STATUS_PENDING_RELEASE)
             ->findOrFail($submissionId);
 
+        $metadata  = $submission->metadata ?? [];
+        $stageId   = $metadata['pending_gatekeeper_stage_id']   ?? null;
+        $stageName = $metadata['pending_gatekeeper_stage_name'] ?? null;
+
+        // Reset reviewer decisions for the triggering stage so they can re-review.
+        if ($stageId) {
+            SubmissionReviewer::where('submission_id', $submissionId)
+                ->where('stage_id', $stageId)
+                ->update([
+                    'decision'    => null,
+                    'decision_at' => null,
+                    'comments'    => null,
+                    'status'      => 'pending',
+                ]);
+
+            // Re-notify the reviewers of that stage.
+            $stageReviewers = SubmissionReviewer::with('user')
+                ->where('submission_id', $submissionId)
+                ->where('stage_id', $stageId)
+                ->get();
+
+            foreach ($stageReviewers as $sr) {
+                if ($sr->user) {
+                    app(NotificationService::class)->notify(
+                        $sr->user,
+                        \App\Models\Notification::TYPE_REVIEWER_ASSIGNED,
+                        [
+                            'submission_id'    => $submissionId,
+                            'submission_title' => $submission->title,
+                            'stage_name'       => $stageName,
+                            'note'             => 'Gatekeeper has requested a re-review: ' . $data['reason'],
+                        ]
+                    );
+                }
+            }
+        }
+
+        // Record the gatekeeper recheck decision for audit history.
+        GatedRelease::create([
+            'submission_id'   => $submission->id,
+            'workflow_run_id' => null,
+            'version_number'  => $submission->current_version,
+            'decision'        => GatedRelease::DECISION_STAGE_RECHECK,
+            'feedback'        => $data['reason'],
+            'released_by'     => $request->user()->id,
+            'released_at'     => now(),
+        ]);
+
+        // Clear pending gatekeeper metadata and return to IN_REVIEW.
+        unset(
+            $metadata['pending_gatekeeper_stage_id'],
+            $metadata['pending_gatekeeper_stage_name'],
+            $metadata['pending_gatekeeper_stage_outcome']
+        );
+
         $oldStatus = $submission->status;
-        $submission->update(['status' => Submission::STATUS_IN_REVIEW]);
+        $submission->update([
+            'status'   => Submission::STATUS_IN_REVIEW,
+            'metadata' => $metadata,
+        ]);
 
         AuditLog::create([
             'submission_id' => $submission->id,
             'actor_id'      => $request->user()->id,
             'action'        => 'GATED_RECHECK_REQUESTED',
             'before_state'  => ['status' => $oldStatus],
-            'after_state'   => ['status' => Submission::STATUS_IN_REVIEW, 'reason' => $data['reason']],
+            'after_state'   => [
+                'status'   => Submission::STATUS_IN_REVIEW,
+                'reason'   => $data['reason'],
+                'stage_id' => $stageId,
+            ],
         ]);
 
-        app(NotificationService::class)->notifyStatusChange($submission->fresh(), Submission::STATUS_IN_REVIEW);
+        return response()->json(['message' => 'Stage sent back for re-review. Reviewer decisions have been reset.']);
+    }
 
-        return response()->json(['message' => 'Recheck requested. Submission returned to in-review.']);
+    // ── Gatekeeper-accessible submission-scoped endpoints ────────────────────
+
+    /**
+     * GET /api/submissions/{id}/gated-release
+     * Full gated release detail for a single submission.
+     * Accessible to admin, coordinator, and the assigned gatekeeper reviewer.
+     */
+    public function showForSubmission(Request $request, string $submissionId): JsonResponse
+    {
+        $user = $request->user();
+        $roles = (array) ($user->roles ?? []);
+
+        if (!$this->canAccessGatedRelease($user, $roles, $submissionId)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        return $this->show($submissionId);
+    }
+
+    /**
+     * POST /api/submissions/{id}/gated-release
+     * Issue a gated release decision for a single submission.
+     * Accessible to admin, coordinator, and the assigned gatekeeper reviewer.
+     */
+    public function storeForSubmission(Request $request, string $submissionId): JsonResponse
+    {
+        $user = $request->user();
+        $roles = (array) ($user->roles ?? []);
+
+        if (!$this->canAccessGatedRelease($user, $roles, $submissionId)) {
+            return response()->json(['message' => 'Forbidden. Only the assigned gatekeeper or admin can issue a release decision.'], 403);
+        }
+
+        $data = $request->validate([
+            'decision' => ['required', 'in:REVISION_REQUIRED'],
+            'feedback' => ['required', 'string', 'max:5000'],
+        ]);
+
+        $submission = Submission::whereHas('submissionType', fn ($q) => $q->where('is_gated_review', true))
+            ->where('status', Submission::STATUS_PENDING_RELEASE)
+            ->findOrFail($submissionId);
+
+        $newStatus = Submission::STATUS_REVISION_REQUIRED;
+
+        // Clear gatekeeper pending metadata.
+        $metadata = $submission->metadata ?? [];
+        unset(
+            $metadata['pending_gatekeeper_stage_id'],
+            $metadata['pending_gatekeeper_stage_name'],
+            $metadata['pending_gatekeeper_stage_outcome']
+        );
+        $submission->update(['metadata' => $metadata]);
+
+        $release = GatedRelease::create([
+            'submission_id'   => $submission->id,
+            'workflow_run_id' => null,
+            'version_number'  => $submission->current_version,
+            'decision'        => GatedRelease::DECISION_REVISION_REQUIRED,
+            'feedback'        => $data['feedback'],
+            'released_by'     => $user->id,
+            'released_at'     => now(),
+        ]);
+
+        $oldStatus = $submission->status;
+        $submission->update(['status' => $newStatus]);
+
+        AuditLog::create([
+            'submission_id' => $submission->id,
+            'actor_id'      => $user->id,
+            'action'        => 'GATED_RELEASE_ISSUED',
+            'before_state'  => ['status' => $oldStatus],
+            'after_state'   => ['status' => $newStatus, 'decision' => $data['decision']],
+        ]);
+
+        app(NotificationService::class)->notifyStatusChange($submission->fresh(), $newStatus);
+
+        return response()->json([
+            'message'    => 'Release decision issued successfully.',
+            'submission' => ['id' => $submission->id, 'status' => $newStatus],
+            'release'    => [
+                'id'          => $release->id,
+                'decision'    => $release->decision,
+                'feedback'    => $release->feedback,
+                'released_at' => $release->released_at,
+            ],
+        ], 201);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Returns true if the user may access the gated release endpoints
+     * for the given submission (admin/coordinator or assigned gatekeeper).
+     */
+    private function canAccessGatedRelease(mixed $user, array $roles, string $submissionId): bool
+    {
+        if (count(array_intersect($roles, ['admin', 'coordinator'])) > 0) {
+            return true;
+        }
+
+        return SubmissionReviewer::where('submission_id', $submissionId)
+            ->where('user_id', $user->id)
+            ->whereHas('stage', fn ($q) => $q->where('is_gatekeeper', true))
+            ->exists();
     }
 }

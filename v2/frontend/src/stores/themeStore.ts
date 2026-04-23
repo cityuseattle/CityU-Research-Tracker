@@ -5,6 +5,8 @@ interface ThemeState {
   isDark: boolean;
   toggleDark: () => void;
   setDark: (value: boolean) => void;
+  accentColor: string | null;
+  setAccentColor: (color: string | null) => void;
 }
 
 export const useThemeStore = create<ThemeState>()(
@@ -13,6 +15,8 @@ export const useThemeStore = create<ThemeState>()(
       isDark: false,
       toggleDark: () => set((s) => ({ isDark: !s.isDark })),
       setDark: (value: boolean) => set({ isDark: value }),
+      accentColor: null,
+      setAccentColor: (color: string | null) => set({ accentColor: color }),
     }),
     { name: 'rrp-theme' }
   )

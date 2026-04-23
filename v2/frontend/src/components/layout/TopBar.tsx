@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useRef, useEffect } from 'react'
-import { Bell, Sun, Moon } from 'lucide-react'
+import { Bell, Sun, Moon, Palette } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
 import { useThemeStore } from '../../stores/themeStore'
 import api from '../../lib/axios'
@@ -9,16 +9,30 @@ import cityuLogo from '../../assets/city-university-logo.svg'
 import type { PublicOrgInfo } from '../../types/organization'
 import type { AppNotification, NotificationsResponse } from '../../types/notifications'
 
+const ACCENT_PRESETS = [
+  { label: 'Default',  color: null },
+  { label: 'Indigo',   color: '#4f46e5' },
+  { label: 'Blue',     color: '#2563eb' },
+  { label: 'Teal',     color: '#0d9488' },
+  { label: 'Green',    color: '#16a34a' },
+  { label: 'Purple',   color: '#7c3aed' },
+  { label: 'Rose',     color: '#e11d48' },
+  { label: 'Orange',   color: '#ea580c' },
+  { label: 'Amber',    color: '#d97706' },
+]
+
 export default function TopBar() {
   const user = useAuthStore((s) => s.user)
   const clearAuth = useAuthStore((s) => s.clearAuth)
   const openProfile = useAuthStore((s) => s.openProfile)
-  const { isDark, toggleDark } = useThemeStore()
+  const { isDark, toggleDark, accentColor, setAccentColor } = useThemeStore()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
   const [bellOpen, setBellOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const bellRef = useRef<HTMLDivElement>(null)
+  const paletteRef = useRef<HTMLDivElement>(null)
 
   const { data: orgInfo } = useQuery<PublicOrgInfo>({
     queryKey: ['org-public'],
@@ -29,7 +43,7 @@ export default function TopBar() {
   const { data: notifData } = useQuery<NotificationsResponse>({
     queryKey: ['notifications'],
     queryFn: () => api.get('/notifications').then((r) => r.data),
-    refetchInterval: 30_000, // poll every 30 s
+    refetchInterval: 30_000,
     enabled: !!user,
   })
 
@@ -49,19 +63,18 @@ export default function TopBar() {
     }
   }, [orgInfo?.primary_color])
 
-  // Close dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     function handler(e: MouseEvent) {
-      if (bellRef.current && !bellRef.current.contains(e.target as Node)) {
-        setBellOpen(false)
-      }
+      if (bellRef.current && !bellRef.current.contains(e.target as Node)) setBellOpen(false)
+      if (paletteRef.current && !paletteRef.current.contains(e.target as Node)) setPaletteOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
   const portalName = orgInfo?.portal_name || 'Research Review Portal'
-  const brandColour = orgInfo?.primary_color || '#0d1f3c'
+  const brandColour = accentColor || orgInfo?.primary_color || '#0d1f3c'
   const logoSrc = orgInfo?.logo_url || cityuLogo
 
   const logoutMutation = useMutation({
@@ -94,9 +107,67 @@ export default function TopBar() {
       {/* Spacer */}
       <div style={{ flex: 1 }} />
 
-      {/* Right: dark toggle + notifications bell + user info + logout */}
+      {/* Right: color picker + dark toggle + notifications bell + user info + logout */}
       {user && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+
+          {/* Portal color personalization */}
+          <div ref={paletteRef} style={{ position: 'relative' }}>
+            <button
+              onClick={() => setPaletteOpen((o) => !o)}
+              title="Personalize portal color"
+              style={{
+                background: accentColor ? 'rgba(255,255,255,0.15)' : 'transparent',
+                border: 'none', cursor: 'pointer',
+                padding: '4px 6px', borderRadius: 4,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.15)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = accentColor ? 'rgba(255,255,255,0.15)' : 'transparent')}
+            >
+              <Palette size={18} color="rgba(255,255,255,0.8)" />
+            </button>
+
+            {paletteOpen && (
+              <div style={{
+                position: 'absolute', top: '110%', right: 0, zIndex: 300,
+                width: 220, background: '#fff', borderRadius: 10,
+                boxShadow: '0 8px 30px rgba(0,0,0,0.18)', border: '1px solid #e5e7eb',
+                padding: '10px 12px',
+              }}>
+                <p style={{ fontSize: '0.75rem', fontWeight: 600, color: '#6b7280', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Portal Color
+                </p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {ACCENT_PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      onClick={() => { setAccentColor(preset.color); setPaletteOpen(false) }}
+                      title={preset.label}
+                      style={{
+                        width: 28, height: 28, borderRadius: '50%',
+                        background: preset.color ?? '#e5e7eb',
+                        border: accentColor === preset.color ? '2px solid #111827' : '2px solid transparent',
+                        cursor: 'pointer',
+                        outline: 'none',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}
+                    >
+                      {preset.color === null && (
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                          <path d="M1 1l10 10M11 1L1 11" stroke="#6b7280" strokeWidth="2" strokeLinecap="round"/>
+                        </svg>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <p style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: 8 }}>
+                  Applies to nav bar color only. Resets to organization default when cleared.
+                </p>
+              </div>
+            )}
+          </div>
 
           {/* Dark mode toggle */}
           <button

@@ -31,11 +31,17 @@ class AuditLogController extends Controller
             $query->where('action', $request->action);
         }
 
-        // Date range
+        // Date range — validate before passing to DB to prevent errors from malformed values
         if ($request->filled('from')) {
+            if (!strtotime($request->from)) {
+                return response()->json(['message' => 'Invalid from date.'], 422);
+            }
             $query->where('created_at', '>=', $request->from);
         }
         if ($request->filled('to')) {
+            if (!strtotime($request->to)) {
+                return response()->json(['message' => 'Invalid to date.'], 422);
+            }
             $query->where('created_at', '<=', $request->to);
         }
 

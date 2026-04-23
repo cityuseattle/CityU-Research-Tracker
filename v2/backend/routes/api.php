@@ -11,14 +11,18 @@ use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ProgramController;
 use App\Http\Controllers\SsoAuthController;
 use App\Http\Controllers\ReviewerPoolController;
+use App\Http\Controllers\DocumentAnnotationController;
 use App\Http\Controllers\SubmissionController;
 use App\Http\Controllers\SubmissionAuthorController;
+use App\Http\Controllers\SubmissionMessageController;
 use App\Http\Controllers\SubmissionReviewerController;
 use App\Http\Controllers\SubmissionMeetingController;
 use App\Http\Controllers\SubmissionTypeController;
 use App\Http\Controllers\SystemController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\WebhookController;
+use App\Http\Controllers\AnnouncementController;
+use App\Http\Controllers\CustomRoleController;
 use App\Http\Controllers\WorkflowController;
 use Illuminate\Support\Facades\Route;
 
@@ -30,12 +34,15 @@ use Illuminate\Support\Facades\Route;
 
 // ── Public routes (no auth required) ─────────────────────────────────────────
 Route::prefix('auth')->group(function () {
-    Route::post('login',               [AuthController::class, 'login']);
-    Route::post('accept-author-invite', [SubmissionAuthorController::class, 'acceptInvite']);
+    Route::post('login',               [AuthController::class, 'login'])->middleware('throttle:10,1');
+    Route::post('accept-author-invite', [SubmissionAuthorController::class, 'acceptInvite'])->middleware('throttle:5,1');
 });
 
 // Public system info (org name/logo for login screen)
 Route::get('system/public', [SystemController::class, 'publicInfo']);
+
+// SSO token exchange — consumes the one-time code from the callback redirect
+Route::post('auth/sso-exchange', [AuthController::class, 'ssoExchange'])->middleware('throttle:10,1');
 
 // ── SSO login flow (public — browser redirect) ────────────────────────────────
 Route::prefix('sso/{provider}')->group(function () {
@@ -50,11 +57,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('auth')->group(function () {
         Route::post('logout',    [AuthController::class, 'logout']);
         Route::get('me',         [AuthController::class, 'me']);
-        Route::patch('password', [AuthController::class, 'changePassword']);
-        Route::patch('profile',  [AuthController::class, 'updateProfile']);
+        Route::patch('password', [AuthController::class, 'changePassword'])->middleware('throttle:5,1');
+        Route::patch('profile',  [AuthController::class, 'updateProfile'])->middleware('throttle:20,1');
         // SSO identity management
         Route::get('sso/identities',                     [SsoAuthController::class, 'listIdentities']);
-        Route::post('sso/link',                          [SsoAuthController::class, 'initiateLink']);
+        Route::post('sso/link',                          [SsoAuthController::class, 'initiateLink'])->middleware('throttle:10,1');
         Route::delete('sso/identities/{identity}',       [SsoAuthController::class, 'unlinkIdentity']);
     });
 
@@ -175,9 +182,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('audit-logs/actions', [AuditLogController::class, 'actions']);
 
         // Analytics
-        Route::get('analytics/overview',       [AnalyticsController::class, 'overview']);
-        Route::get('analytics/turnaround',     [AnalyticsController::class, 'turnaround']);
-        Route::get('analytics/reviewer-load',  [AnalyticsController::class, 'reviewerLoad']);
+        Route::get('analytics/overview',         [AnalyticsController::class, 'overview']);
+        Route::get('analytics/turnaround',       [AnalyticsController::class, 'turnaround']);
+        Route::get('analytics/reviewer-load',    [AnalyticsController::class, 'reviewerLoad']);
+        Route::get('analytics/metrics',          [AnalyticsController::class, 'metrics']);
+
+        // Coordinator pending actions (extensions, conflicts, unassigned submissions)
+        Route::get('reviewer-pending-actions',   [SubmissionReviewerController::class, 'pendingActions']);
 
         // Webhooks
         Route::get('webhooks/events',          [WebhookController::class, 'events']);
@@ -188,26 +199,42 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('webhooks/{id}',         [WebhookController::class, 'destroy']);
         Route::get('webhooks/{id}/deliveries', [WebhookController::class, 'deliveries']);
 
-        // Gated reviews
-        Route::get('gated-reviews',                          [GatedReleaseController::class, 'index']);
-        Route::get('gated-reviews/{submissionId}',           [GatedReleaseController::class, 'show']);
-        Route::post('gated-reviews',                         [GatedReleaseController::class, 'store']);
-        Route::post('gated-reviews/{submissionId}/recheck',  [GatedReleaseController::class, 'recheck']);
-
         // Appeals management
         Route::get('appeals',         [AppealController::class, 'index']);
         Route::get('appeals/{id}',    [AppealController::class, 'show']);
         Route::patch('appeals/{id}',  [AppealController::class, 'update']);
 
-        // Audit logs
-        Route::get('audit-logs',         [AuditLogController::class, 'index']);
-        Route::get('audit-logs/actions', [AuditLogController::class, 'actions']);
+        // Announcements
+        Route::get('announcements',                      [AnnouncementController::class, 'index']);
+        Route::post('announcements',                     [AnnouncementController::class, 'store']);
+        Route::patch('announcements/{announcement}',     [AnnouncementController::class, 'update']);
+        Route::delete('announcements/{announcement}',    [AnnouncementController::class, 'destroy']);
+        Route::post('announcements/{announcement}/broadcast', [AnnouncementController::class, 'broadcast']);
 
-        // Analytics
-        Route::get('analytics/overview',       [AnalyticsController::class, 'overview']);
-        Route::get('analytics/turnaround',     [AnalyticsController::class, 'turnaround']);
-        Route::get('analytics/reviewer-load',  [AnalyticsController::class, 'reviewerLoad']);
+        // Custom roles (workflow stage labels)
+        Route::get('custom-roles',                  [CustomRoleController::class, 'index']);
+        Route::post('custom-roles',                 [CustomRoleController::class, 'store']);
+        Route::patch('custom-roles/{customRole}',   [CustomRoleController::class, 'update']);
+        Route::delete('custom-roles/{customRole}',  [CustomRoleController::class, 'destroy']);
     });
+
+    // ── Gated reviews — accessible to admin, coordinator, and assigned gatekeeper reviewers ──
+    Route::middleware('role:admin,coordinator,reviewer')->prefix('admin')->group(function () {
+        Route::get('gated-reviews',                          [GatedReleaseController::class, 'index']);
+        Route::get('gated-reviews/{submissionId}',           [GatedReleaseController::class, 'show']);
+        Route::post('gated-reviews',                         [GatedReleaseController::class, 'store']);
+        Route::post('gated-reviews/{submissionId}/recheck',  [GatedReleaseController::class, 'recheck']);
+    });
+
+    // ── Reviewer self-analytics (accessible to reviewer role only) ───────────
+    Route::middleware('role:reviewer,admin,coordinator')->group(function () {
+        Route::get('analytics/my-stats',               [AnalyticsController::class, 'myStats']);
+        Route::get('analytics/my-daily',               [AnalyticsController::class, 'myDailyActivity']);
+        Route::get('analytics/my-submission-breakdown',[AnalyticsController::class, 'mySubmissionBreakdown']);
+    });
+
+    // ── Calendar ─────────────────────────────────────────────────────────────
+    Route::get('calendar/deadlines', [SubmissionController::class, 'calendarDeadlines']);
 
     // ── Submissions ───────────────────────────────────────────────────────────
     Route::prefix('submissions')->group(function () {
@@ -221,8 +248,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{id}/withdraw',  [SubmissionController::class, 'withdraw']);
         Route::get('/{id}/activity',   [SubmissionController::class, 'activityLog']);
         Route::get('/{id}/feedback',   [SubmissionController::class, 'feedback']);
-        Route::post('/{id}/appeal',    [SubmissionController::class, 'submitAppeal']);
+        Route::post('/{id}/appeal',    [SubmissionController::class, 'submitAppeal'])->middleware('throttle:5,1');
         Route::get('/{id}/review-progress', [SubmissionController::class, 'reviewProgress']);
+        // Gated release — accessible to admin/coordinator OR the assigned gatekeeper reviewer
+        Route::get('/{id}/gated-release',  [GatedReleaseController::class, 'showForSubmission']);
+        Route::post('/{id}/gated-release', [GatedReleaseController::class, 'storeForSubmission']);
         Route::middleware('role:admin,coordinator')->group(function () {
             Route::post('/{id}/advance-review', [SubmissionController::class, 'advanceReview']);
         });
@@ -231,9 +261,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{id}/files/{version}/{filename}', [SubmissionController::class, 'downloadFile'])
             ->where('filename', '.+');
 
+        // Inline document annotations
+        Route::get('/{id}/annotations',                   [DocumentAnnotationController::class, 'index']);
+        Route::post('/{id}/annotations',                  [DocumentAnnotationController::class, 'store'])->middleware('throttle:30,1');
+        Route::delete('/{id}/annotations/{annotationId}', [DocumentAnnotationController::class, 'destroy']);
+
+        // Submission messages (communication tab)
+        Route::get('/{id}/messages',                      [SubmissionMessageController::class, 'index']);
+        Route::post('/{id}/messages',                     [SubmissionMessageController::class, 'store'])->middleware('throttle:30,1');
+        Route::delete('/{id}/messages/{messageId}',       [SubmissionMessageController::class, 'destroy']);
+
         // Authors
         Route::get('/{id}/authors',                              [SubmissionAuthorController::class, 'index']);
         Route::post('/{id}/authors',                             [SubmissionAuthorController::class, 'store']);
+        Route::patch('/{id}/authors/reorder',                    [SubmissionAuthorController::class, 'reorder']);
         Route::delete('/{id}/authors/{authorId}',                [SubmissionAuthorController::class, 'destroy']);
         Route::post('/{id}/authors/{authorId}/resend-invite',    [SubmissionAuthorController::class, 'resendInvite']);
 
@@ -245,6 +286,9 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/{id}/reviewer-pool-suggestions',        [SubmissionReviewerController::class, 'poolSuggestions']);
         });
         Route::patch('/{id}/reviewers/{reviewerId}',             [SubmissionReviewerController::class, 'update']);
+        Route::post('/{id}/reviewers/{reviewerId}/request-extension', [SubmissionReviewerController::class, 'requestExtension'])->middleware('throttle:10,1');
+        Route::post('/{id}/reviewers/{reviewerId}/flag-conflict',      [SubmissionReviewerController::class, 'flagConflict'])->middleware('throttle:10,1');
+        Route::post('/{id}/reviewers/{reviewerId}/resolve-conflict',   [SubmissionReviewerController::class, 'resolveConflict'])->middleware('throttle:10,1');
 
         // Meetings (request/schedule by reviewer or submitter; confirm by admin)
         Route::get('/{id}/meetings',                             [SubmissionMeetingController::class, 'index']);
@@ -253,6 +297,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::middleware('role:admin,coordinator')->group(function () {
             Route::patch('/{id}/meetings/{meetingId}',           [SubmissionMeetingController::class, 'update']);
         });
+
+        // Similarity check
+        Route::get('/{id}/similarity', [SubmissionController::class, 'similarity']);
 
     }); // end prefix('submissions')
 

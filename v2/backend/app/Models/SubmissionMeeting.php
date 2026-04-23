@@ -11,7 +11,7 @@ class SubmissionMeeting extends Model
     protected $keyType = 'string';
 
     protected $fillable = [
-        'id', 'submission_id', 'stage_id', 'requested_by',
+        'id', 'submission_id', 'stage_id', 'meeting_type', 'requested_by',
         'title', 'description', 'proposed_at', 'status',
         'confirmed_at', 'meeting_link', 'notes',
     ];

@@ -9,6 +9,28 @@
   }
 }
 
+/* ── Rich text editor placeholder ────────────────────────────────────────── */
+[contenteditable][data-placeholder]:empty::before {
+  content: attr(data-placeholder);
+  color: #9ca3af; /* gray-400 */
+  pointer-events: none;
+}
+
+/* ── Annotation active highlight (jump-to in InlineDocViewer) ─────────────── */
+mark.ann-active-mark,
+.ann-active-mark {
+  background: #fde68a;          /* amber-200 */
+  box-shadow: 0 0 0 2px #f59e0b; /* amber-500 ring */
+  border-radius: 2px;
+  padding: 0 2px;
+  animation: ann-highlight-pulse 0.4s ease;
+}
+
+@keyframes ann-highlight-pulse {
+  0%   { background: #fbbf24; box-shadow: 0 0 0 4px #f59e0b; }
+  100% { background: #fde68a; box-shadow: 0 0 0 2px #f59e0b; }
+}
+
 /* ── Toast slide-in animation ─────────────────────────────────────────────── */
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(8px) scale(0.97); }

@@ -18,10 +18,11 @@ class GatedRelease extends Model
     const DECISION_CONDITIONALLY_ACCEPTED = 'CONDITIONALLY_ACCEPTED';
     const DECISION_REVISION_REQUIRED      = 'REVISION_REQUIRED';
     const DECISION_REJECTED               = 'REJECTED';
+    const DECISION_STAGE_RECHECK          = 'STAGE_RECHECK';
 
     protected $fillable = [
         'submission_id',
-        'workflow_run_id',
+        'workflow_run_id',   // nullable — workflow_runs table is reserved for future use
         'version_number',
         'decision',
         'feedback',

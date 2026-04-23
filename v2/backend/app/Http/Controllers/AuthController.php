@@ -52,8 +52,10 @@ class AuthController extends Controller
             ], 401);
         }
 
-        // Inactive / not found
+        // Inactive / not found — perform a dummy hash check to prevent timing-based
+        // email enumeration (Hash::check takes ~100 ms; skipping it leaks existence).
         if (!$user || !$user->is_active) {
+            Hash::check($credentials['password'], '$2y$12$invaliddummyhashvaluethatnevermatchesXXXXXXXXXXXXXXXXX');
             $this->auditLoginFailed($credentials['email'], $request, 'INACTIVE_OR_NOT_FOUND');
             return response()->json(['message' => 'Invalid credentials.'], 401);
         }
@@ -228,5 +230,26 @@ class AuthController extends Controller
             'user_agent'  => $request->userAgent(),
             'request_id'  => $request->header('X-Request-Id'),
         ]);
+    }
+
+    /**
+     * POST /api/auth/sso-exchange
+     * Exchanges the short-lived one-time SSO code for the real Sanctum token.
+     * This avoids passing the raw token in the URL (and therefore in server logs).
+     */
+    public function ssoExchange(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'code' => ['required', 'string', 'size:64'],
+        ]);
+
+        $cacheKey = 'sso_exchange:' . $data['code'];
+        $token    = cache()->pull($cacheKey); // pull = get + delete (one-time use)
+
+        if (!$token) {
+            return response()->json(['message' => 'Invalid or expired SSO code.'], 401);
+        }
+
+        return response()->json(['token' => $token]);
     }
 }

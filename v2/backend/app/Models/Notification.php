@@ -65,4 +65,8 @@ class Notification extends Model
     const TYPE_REVIEWER_ACCEPTED     = 'reviewer_accepted';
     const TYPE_REVIEWER_DECLINED     = 'reviewer_declined';
     const TYPE_STAGE_COMPLETE        = 'stage_complete';
+    const TYPE_EXTENSION_REQUESTED   = 'extension_requested';
+    const TYPE_EXTENSION_RESOLVED    = 'extension_resolved';
+    const TYPE_CONFLICT_FLAGGED      = 'conflict_flagged';
+    const TYPE_CONFLICT_RESOLVED     = 'conflict_resolved';
 }

@@ -21,7 +21,7 @@ use Illuminate\Support\Str;
  *   2. IdP redirects to GET /api/sso/{provider}/callback?code=...&state=...
  *      → Validates state, exchanges code for token, fetches userinfo,
  *        finds or provisions the User, issues a Sanctum token, then redirects
- *        to /app?sso_token={token}
+ *        to /app?sso_code={one_time_code} — frontend exchanges via POST /api/auth/sso-exchange
  */
 class SsoAuthController extends Controller
 {
@@ -62,7 +62,11 @@ class SsoAuthController extends Controller
 
         if ($error) {
             Log::warning('SSO callback error', ['error' => $error, 'provider' => $provider->id]);
-            return redirect('/app?sso_error=' . urlencode($request->query('error_description', $error)));
+            // Sanitize the IdP-supplied error description before embedding in the redirect URL
+            // to prevent phishing-quality content from being displayed to users.
+            $rawDesc = $request->query('error_description', $error);
+            $safeDesc = preg_replace('/[^a-zA-Z0-9 _.@\-]/', '', substr((string) $rawDesc, 0, 200));
+            return redirect('/app?sso_error=' . urlencode($safeDesc ?: 'sso_error'));
         }
 
         // Validate state
@@ -121,7 +125,7 @@ class SsoAuthController extends Controller
             ]);
         }
 
-        if ($user->status !== 'active') {
+        if (!$user->is_active) {
             return redirect('/app?sso_error=account_inactive');
         }
 
@@ -134,7 +138,12 @@ class SsoAuthController extends Controller
             ['user_id' => $user->id, 'provider_email' => $email]
         );
 
-        return redirect('/app?sso_token=' . urlencode($token));
+        // Use a short-lived one-time code instead of putting the raw token in the URL.
+        // The frontend exchanges this code for the real token via POST /api/auth/sso-exchange.
+        $code = \Illuminate\Support\Str::random(64);
+        cache()->put("sso_exchange:{$code}", $token, 60); // valid for 60 seconds
+
+        return redirect('/app?sso_code=' . urlencode($code));
     }
 
     // ── SSO identity management ───────────────────────────────────────────────

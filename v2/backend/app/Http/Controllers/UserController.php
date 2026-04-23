@@ -46,7 +46,8 @@ class UserController extends Controller
             })
             ->orderBy('name');
 
-        $users = $query->paginate($request->integer('per_page', 20));
+        $perPage = min($request->integer('per_page', 20), 100);
+        $users = $query->paginate($perPage);
 
         return response()->json([
             'data' => UserResource::collection($users->items()),
@@ -91,6 +92,15 @@ class UserController extends Controller
             'program_id'   => ['nullable', 'uuid', 'exists:programs,id'],
             'is_active'    => ['boolean'],
         ]);
+
+        // Coordinators cannot create admin accounts
+        $actor = $request->user();
+        if ($actor->hasRole('coordinator') && !$actor->hasRole('admin')) {
+            $data['roles'] = array_values(array_filter($data['roles'], fn($r) => $r !== 'admin'));
+            if (empty($data['roles'])) {
+                $data['roles'] = ['student'];
+            }
+        }
 
         $user = User::create([
             'first_name'    => $data['first_name'],
@@ -138,7 +148,36 @@ class UserController extends Controller
             return response()->json(['message' => 'The emergency admin account cannot be modified directly.'], 403);
         }
 
-        $isAdmin = $request->user()->hasRole('admin');
+        $actor   = $request->user();
+        $isAdmin = $actor->hasRole('admin');
+        $isCoordinatorOnly = $actor->hasRole('coordinator') && !$isAdmin;
+
+        // Coordinators can only update organisation and org_role and active status
+        if ($isCoordinatorOnly) {
+            $data = $request->validate([
+                'organization' => ['sometimes', 'nullable', 'string', 'max:255'],
+                'org_role'     => ['sometimes', 'nullable', 'string', 'max:100'],
+                'is_active'    => ['sometimes', 'boolean'],
+                'program_id'   => ['sometimes', 'nullable', 'uuid', 'exists:programs,id'],
+            ]);
+
+            $before = $user->only(['is_active', 'organization', 'org_role', 'program_id']);
+            $user->update($data);
+
+            AuditLog::create([
+                'actor_id'     => $actor->id,
+                'action'       => 'USER_UPDATED',
+                'target_type'  => 'user',
+                'target_id'    => $user->id,
+                'before_state' => $before,
+                'after_state'  => $user->only(['is_active', 'organization', 'org_role', 'program_id']),
+                'ip_address'   => $request->ip(),
+                'user_agent'   => $request->userAgent(),
+                'request_id'   => $request->header('X-Request-Id'),
+            ]);
+
+            return response()->json(new UserResource($user->load('program')));
+        }
 
         $rules = [
             'first_name'   => ['sometimes', 'string', 'max:255'],
@@ -251,7 +290,9 @@ class UserController extends Controller
      */
     public function unlock(Request $request, User $user): JsonResponse
     {
-        $this->authorize('update', $user);
+        if (!$request->user()->hasRole('admin')) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
 
         $user->update([
             'locked_at'              => null,
@@ -383,7 +424,9 @@ class UserController extends Controller
      */
     public function addCoordinatorGroup(Request $request, User $user): JsonResponse
     {
-        $this->authorize('update', $user);
+        if (!$request->user()->hasRole('admin')) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
 
         $data = $request->validate([
             'group_id' => ['required', 'uuid', 'exists:groups,id'],
@@ -404,9 +447,11 @@ class UserController extends Controller
     /**
      * DELETE /api/users/{user}/coordinator-groups/{group}
      */
-    public function removeCoordinatorGroup(User $user, Group $group): JsonResponse
+    public function removeCoordinatorGroup(Request $request, User $user, Group $group): JsonResponse
     {
-        $this->authorize('update', $user);
+        if (!$request->user()->hasRole('admin')) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
 
         CoordinatorGroupAssignment::where('coordinator_id', $user->id)
             ->where('group_id', $group->id)

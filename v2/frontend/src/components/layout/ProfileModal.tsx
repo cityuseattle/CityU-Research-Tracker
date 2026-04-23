@@ -20,7 +20,7 @@ export default function ProfileModal() {
   const profileOpen = useAuthStore((s) => s.profileOpen)
   const closeProfile = useAuthStore((s) => s.closeProfile)
   const updateUser = useAuthStore((s) => s.updateUser)
-  const qc = useQueryClient()
+  useQueryClient()
 
   const [tab, setTab] = useState<Tab>('profile')
 
@@ -96,13 +96,14 @@ export default function ProfileModal() {
     },
   })
 
-  // SSO identities
+  // SSO identities — always fetch when modal opens so we can check if password should be disabled
   const { data: identitiesData, refetch: refetchIdentities } = useQuery<{ data: SsoIdentity[] }>({
     queryKey: ['sso-identities'],
     queryFn: () => api.get('/auth/sso/identities').then((r) => r.data),
-    enabled: profileOpen && tab === 'accounts',
+    enabled: profileOpen,
   })
   const identities = identitiesData?.data ?? []
+  const hasSso = identities.length > 0
 
   const [unlinkErr, setUnlinkErr] = useState('')
   const [unlinking, setUnlinking] = useState<string | null>(null)
@@ -158,11 +159,15 @@ export default function ProfileModal() {
             <User className="w-4 h-4" /> My Profile
           </button>
           <button
-            onClick={() => { setTab('password'); setSuccessMsg(''); setErrorMsg('') }}
+            onClick={() => { if (!hasSso) { setTab('password'); setSuccessMsg(''); setErrorMsg('') } }}
+            disabled={hasSso}
+            title={hasSso ? 'Password login is disabled — this account uses SSO' : undefined}
             className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
               tab === 'password'
                 ? 'text-blue-600 border-b-2 border-blue-600'
-                : 'text-gray-500 hover:text-gray-700'
+                : hasSso
+                  ? 'text-gray-300 cursor-not-allowed'
+                  : 'text-gray-500 hover:text-gray-700'
             }`}
           >
             <Lock className="w-4 h-4" /> Change Password
@@ -264,7 +269,24 @@ export default function ProfileModal() {
                 </button>
               </div>
             </>
-          ) : (
+          ) : tab === 'password' ? (
+            hasSso ? (
+              <div className="text-center py-8">
+                <Lock className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                <p className="text-sm font-medium text-gray-700 mb-1">Password login is disabled</p>
+                <p className="text-xs text-gray-400">
+                  This account uses SSO for authentication. To change your password, please use your identity provider's settings.
+                </p>
+                <div className="mt-4 space-y-2">
+                  {identities.map((id) => (
+                    <div key={id.id} className="flex items-center justify-center gap-2 text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                      <LinkIcon className="w-3.5 h-3.5" />
+                      Linked via {id.provider_name}{id.provider_email ? ` (${id.provider_email})` : ''}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
             <>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Current Password</label>
@@ -310,6 +332,7 @@ export default function ProfileModal() {
                 </button>
               </div>
             </>
+            )
           ) : tab === 'accounts' ? (
             <div>
               <p className="text-sm text-gray-600 mb-4">

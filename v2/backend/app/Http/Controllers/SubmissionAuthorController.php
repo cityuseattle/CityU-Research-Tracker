@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\PasswordPolicy;
 use App\Models\Submission;
 use App\Models\SubmissionAuthor;
 use App\Models\User;
@@ -138,15 +139,28 @@ class SubmissionAuthorController extends Controller
      */
     public function acceptInvite(Request $request): JsonResponse
     {
+        $policy = PasswordPolicy::find(1);
+        $passwordRules = ['required', 'string', 'confirmed'];
+        if ($policy) {
+            $pass = \Illuminate\Validation\Rules\Password::min($policy->min_length ?? 8);
+            if ($policy->require_uppercase) $pass = $pass->mixedCase();
+            if ($policy->require_number)    $pass = $pass->numbers();
+            if ($policy->require_special)   $pass = $pass->symbols();
+            $passwordRules[] = $pass;
+        } else {
+            $passwordRules[] = 'min:8';
+        }
+
         $data = $request->validate([
             'token'      => ['required', 'string', 'size:64'],
             'first_name' => ['required', 'string', 'max:100'],
             'last_name'  => ['required', 'string', 'max:100'],
-            'password'   => ['required', 'string', 'min:8', 'confirmed'],
+            'password'   => $passwordRules,
         ]);
 
         $author = SubmissionAuthor::where('invite_token', $data['token'])
             ->whereNull('joined_at')
+            ->where('invited_at', '>=', now()->subDays(30))
             ->first();
 
         if (!$author) {
@@ -188,6 +202,39 @@ class SubmissionAuthorController extends Controller
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * PATCH /api/submissions/{submissionId}/authors/reorder
+     *
+     * Accepts an ordered array of author IDs and updates author_order accordingly.
+     * Body: { "order": ["uuid-1", "uuid-2", ...] }
+     */
+    public function reorder(Request $request, string $submissionId): JsonResponse
+    {
+        $submission = Submission::findOrFail($submissionId);
+        $this->authorize('update', $submission);
+
+        $data = $request->validate([
+            'order'   => ['required', 'array', 'min:1'],
+            'order.*' => ['required', 'string', 'uuid'],
+        ]);
+
+        $ids = $data['order'];
+
+        DB::transaction(function () use ($submissionId, $ids) {
+            foreach ($ids as $position => $authorId) {
+                SubmissionAuthor::where('submission_id', $submissionId)
+                    ->where('id', $authorId)
+                    ->update(['author_order' => $position + 1]);
+            }
+        });
+
+        $authors = SubmissionAuthor::where('submission_id', $submissionId)
+            ->orderBy('author_order')
+            ->get();
+
+        return response()->json(['data' => $authors->map(fn($a) => $this->toResource($a))]);
+    }
 
     private function toResource(SubmissionAuthor $a): array
     {

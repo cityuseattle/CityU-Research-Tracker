@@ -41,7 +41,7 @@ class ProgramController extends Controller
 
     /**
      * POST /api/programs
-     * Admin only.
+     * Admin or coordinator.
      */
     public function store(Request $request): JsonResponse
     {
@@ -49,10 +49,11 @@ class ProgramController extends Controller
 
         $data = $request->validate([
             'name'                 => ['required', 'string', 'max:255'],
-            'school'               => ['required', 'string', 'max:255'],
-            'program_director_id'  => ['nullable', 'uuid', 'exists:users,id'],
-            'group_id'             => ['nullable', 'uuid', 'exists:groups,id'],
-            'is_active'            => ['boolean'],
+            'school'               => ['sometimes', 'nullable', 'string', 'max:255'],
+            'description'          => ['sometimes', 'nullable', 'string'],
+            'program_director_id'  => ['sometimes', 'nullable', 'uuid', 'exists:users,id'],
+            'group_id'             => ['sometimes', 'nullable', 'uuid', 'exists:groups,id'],
+            'is_active'            => ['sometimes', 'boolean'],
         ]);
 
         $program = Program::create($data);
@@ -63,7 +64,7 @@ class ProgramController extends Controller
 
     /**
      * PATCH /api/programs/{program}
-     * Admin only.
+     * Admin or coordinator.
      */
     public function update(Request $request, string $id): JsonResponse
     {
@@ -72,7 +73,8 @@ class ProgramController extends Controller
 
         $data = $request->validate([
             'name'                 => ['sometimes', 'string', 'max:255'],
-            'school'               => ['sometimes', 'string', 'max:255'],
+            'school'               => ['sometimes', 'nullable', 'string', 'max:255'],
+            'description'          => ['sometimes', 'nullable', 'string'],
             'program_director_id'  => ['sometimes', 'nullable', 'uuid', 'exists:users,id'],
             'group_id'             => ['sometimes', 'nullable', 'uuid', 'exists:groups,id'],
             'is_active'            => ['sometimes', 'boolean'],

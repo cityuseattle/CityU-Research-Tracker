@@ -1,6 +1,9 @@
 import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BarChart2, TrendingUp, Users, Clock, CheckCircle2, AlertTriangle, FileText } from 'lucide-react'
+import {
+  BarChart2, TrendingUp, Users, Clock, CheckCircle2, AlertTriangle, FileText,
+  Activity, Ban, UserCheck, Inbox, ArrowRight, Timer,
+} from 'lucide-react'
 import api from '../lib/axios'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -14,6 +17,24 @@ interface OverviewData {
   by_status: Record<string, number>
   by_type: Record<string, number>
   monthly_trend: { month: string; count: number }[]
+  // Extended stats
+  active_submissions: number
+  pending_assignment: number
+  overdue_reviews: number
+  total_reviews: number
+  completed_reviews: number
+  under_review: number
+  revision_required: number
+  cancelled: number
+  withdrawn: number
+  active_reviewers: number
+}
+
+interface MetricsData {
+  late_alerts: number
+  avg_time_to_decision: number | null
+  avg_stages: number | null
+  mean_reviewer_load: number | null
 }
 
 interface TurnaroundData {
@@ -25,6 +46,9 @@ interface ReviewerRow {
   id: string; name: string; email: string
   pending_count: number; completed_count: number; total_count: number
   completion_rate: number
+  avg_turnaround_days: number | null
+  on_time_rate: number | null
+  overdue_count: number
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -97,18 +121,86 @@ function OverviewTab() {
     queryFn: () => api.get('/admin/analytics/overview').then(r => r.data),
     staleTime: 60_000,
   })
+  const { data: metricsData } = useQuery<{ data: MetricsData }>({
+    queryKey: ['analytics-metrics'],
+    queryFn: () => api.get('/admin/analytics/metrics').then(r => r.data),
+    staleTime: 60_000,
+  })
   const d = data?.data
+  const m = metricsData?.data
   if (isLoading) return <div className="h-40 bg-gray-100 rounded-xl animate-pulse" />
   const maxStatus = d ? Math.max(...Object.values(d.by_status), 1) : 1
   const maxType   = d ? Math.max(...Object.values(d.by_type), 1)   : 1
   return (
     <div className="space-y-6">
+      {/* Row 1: Original summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard icon={FileText}      label="Total Submissions"    value={d?.total_submissions ?? 0}    color="bg-brand-800" />
         <StatCard icon={AlertTriangle} label="Pending Review"       value={d?.pending_review ?? 0}       color="bg-amber-500" />
         <StatCard icon={CheckCircle2}  label="Completed This Month" value={d?.completed_this_month ?? 0} color="bg-green-600" />
         <StatCard icon={Users}         label="Active Users (30d)"   value={d?.active_users_30d ?? 0}     color="bg-blue-600"  />
       </div>
+
+      {/* Row 2: Extended status stats */}
+      <div>
+        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Submission & Review Breakdown</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-3">
+          <StatCard icon={Activity}      label="Active Submissions"  value={d?.active_submissions ?? 0}  color="bg-indigo-600" />
+          <StatCard icon={Inbox}         label="Pending Assignment"  value={d?.pending_assignment ?? 0}  color="bg-amber-600"  />
+          <StatCard icon={AlertTriangle} label="Overdue Reviews"     value={d?.overdue_reviews ?? 0}     color="bg-red-500"    />
+          <StatCard icon={FileText}      label="Total Reviews"       value={d?.total_reviews ?? 0}       color="bg-slate-600"  />
+          <StatCard icon={CheckCircle2}  label="Completed Reviews"   value={d?.completed_reviews ?? 0}   color="bg-green-600"  />
+          <StatCard icon={Clock}         label="Under Review"        value={d?.under_review ?? 0}        color="bg-blue-500"   />
+          <StatCard icon={ArrowRight}    label="Revision Required"   value={d?.revision_required ?? 0}   color="bg-orange-500" />
+          <StatCard icon={Ban}           label="Cancelled"           value={d?.cancelled ?? 0}           color="bg-gray-500"   />
+          <StatCard icon={Ban}           label="Withdrawn"           value={d?.withdrawn ?? 0}           color="bg-gray-400"   />
+          <StatCard icon={Users}         label="Active Users"        value={d?.total_active_users ?? 0}  color="bg-blue-700"   />
+          <StatCard icon={UserCheck}     label="Active Reviewers"    value={d?.active_reviewers ?? 0}    color="bg-teal-600"   />
+        </div>
+      </div>
+
+      {/* Row 3: Key metrics */}
+      {m && (
+        <div>
+          <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Key Performance Metrics</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-white rounded-xl border border-red-200 p-5 flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-500" />
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Late Alerts</span>
+              </div>
+              <p className="text-2xl font-bold text-red-600 mt-1">{m.late_alerts}</p>
+              <p className="text-xs text-gray-400">Overdue reviewer assignments</p>
+            </div>
+            <div className="bg-white rounded-xl border border-blue-200 p-5 flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <Timer className="w-4 h-4 text-blue-500" />
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Avg. Time to Decision</span>
+              </div>
+              <p className="text-2xl font-bold text-blue-600 mt-1">{m.avg_time_to_decision != null ? `${m.avg_time_to_decision}d` : '—'}</p>
+              <p className="text-xs text-gray-400">Submission to final decision</p>
+            </div>
+            <div className="bg-white rounded-xl border border-indigo-200 p-5 flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-indigo-500" />
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Avg. Stages / Submission</span>
+              </div>
+              <p className="text-2xl font-bold text-indigo-600 mt-1">{m.avg_stages ?? '—'}</p>
+              <p className="text-xs text-gray-400">Mean distinct review stages</p>
+            </div>
+            <div className="bg-white rounded-xl border border-teal-200 p-5 flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-teal-500" />
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Mean Reviewer Load</span>
+              </div>
+              <p className="text-2xl font-bold text-teal-600 mt-1">{m.mean_reviewer_load ?? '—'}</p>
+              <p className="text-xs text-gray-400">Avg. pending assignments / reviewer</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Charts */}
       <div className="grid md:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <h3 className="text-sm font-semibold text-gray-700 mb-4">By Status</h3>
@@ -216,51 +308,71 @@ function ReviewerLoadTab() {
   if (isLoading) return <div className="h-40 bg-gray-100 rounded-xl animate-pulse" />
   const rows = data?.data ?? []
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="px-5 py-3 border-b border-gray-100">
-        <h3 className="text-sm font-semibold text-gray-700">Reviewer Workload</h3>
-      </div>
-      {!rows.length
-        ? <p className="text-sm text-gray-400 text-center py-12">No reviewer data yet.</p>
-        : <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase">
-                <tr>
-                  <th className="px-5 py-2.5 text-left">Reviewer</th>
-                  <th className="px-5 py-2.5 text-right">Pending</th>
-                  <th className="px-5 py-2.5 text-right">Completed</th>
-                  <th className="px-5 py-2.5 text-right">Total</th>
-                  <th className="px-5 py-2.5 text-right">Completion</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {rows.map(r => (
-                  <tr key={r.id} className="hover:bg-gray-50">
-                    <td className="px-5 py-3">
-                      <p className="font-medium text-gray-900">{r.name}</p>
-                      <p className="text-xs text-gray-400">{r.email}</p>
-                    </td>
-                    <td className="px-5 py-3 text-right">
-                      {r.pending_count > 0
-                        ? <span className="font-semibold text-amber-600">{r.pending_count}</span>
-                        : <span className="text-gray-400">0</span>}
-                    </td>
-                    <td className="px-5 py-3 text-right text-gray-600">{r.completed_count}</td>
-                    <td className="px-5 py-3 text-right text-gray-600">{r.total_count}</td>
-                    <td className="px-5 py-3 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <div className="w-16 bg-gray-100 rounded-full h-1.5">
-                          <div className="h-1.5 rounded-full bg-green-500" style={{ width: `${r.completion_rate ?? 0}%` }} />
-                        </div>
-                        <span className="text-xs text-gray-600 w-8">{r.completion_rate ?? 0}%</span>
-                      </div>
-                    </td>
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-100">
+          <h3 className="text-sm font-semibold text-gray-700">Reviewer Workload & Performance</h3>
+        </div>
+        {!rows.length
+          ? <p className="text-sm text-gray-400 text-center py-12">No reviewer data yet.</p>
+          : <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase">
+                  <tr>
+                    <th className="px-5 py-2.5 text-left">Reviewer</th>
+                    <th className="px-5 py-2.5 text-right">Pending</th>
+                    <th className="px-5 py-2.5 text-right">Completed</th>
+                    <th className="px-5 py-2.5 text-right">Overdue</th>
+                    <th className="px-5 py-2.5 text-right">Total</th>
+                    <th className="px-5 py-2.5 text-right">Avg. Days</th>
+                    <th className="px-5 py-2.5 text-right">On-Time</th>
+                    <th className="px-5 py-2.5 text-right">Completion</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-      }
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {rows.map(r => (
+                    <tr key={r.id} className="hover:bg-gray-50">
+                      <td className="px-5 py-3">
+                        <p className="font-medium text-gray-900">{r.name}</p>
+                        <p className="text-xs text-gray-400">{r.email}</p>
+                      </td>
+                      <td className="px-5 py-3 text-right">
+                        {r.pending_count > 0
+                          ? <span className="font-semibold text-amber-600">{r.pending_count}</span>
+                          : <span className="text-gray-400">0</span>}
+                      </td>
+                      <td className="px-5 py-3 text-right text-gray-600">{r.completed_count}</td>
+                      <td className="px-5 py-3 text-right">
+                        {r.overdue_count > 0
+                          ? <span className="font-semibold text-red-500">{r.overdue_count}</span>
+                          : <span className="text-gray-400">0</span>}
+                      </td>
+                      <td className="px-5 py-3 text-right text-gray-600">{r.total_count}</td>
+                      <td className="px-5 py-3 text-right font-semibold text-brand-700">
+                        {r.avg_turnaround_days != null ? `${r.avg_turnaround_days}d` : '—'}
+                      </td>
+                      <td className="px-5 py-3 text-right">
+                        {r.on_time_rate != null
+                          ? <span className={r.on_time_rate >= 80 ? 'text-green-600 font-semibold' : r.on_time_rate >= 50 ? 'text-amber-600' : 'text-red-500 font-semibold'}>
+                              {r.on_time_rate}%
+                            </span>
+                          : <span className="text-gray-400">—</span>}
+                      </td>
+                      <td className="px-5 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <div className="w-16 bg-gray-100 rounded-full h-1.5">
+                            <div className="h-1.5 rounded-full bg-green-500" style={{ width: `${r.completion_rate ?? 0}%` }} />
+                          </div>
+                          <span className="text-xs text-gray-600 w-8">{r.completion_rate ?? 0}%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+        }
+      </div>
     </div>
   )
 }

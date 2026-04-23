@@ -14,6 +14,7 @@ class Submission extends Model
 
     const STATUS_DRAFT               = 'DRAFT';
     const STATUS_SUBMITTED           = 'SUBMITTED';
+    const STATUS_RESUBMITTED         = 'RESUBMITTED';
     const STATUS_AWAITING_REVIEWERS  = 'AWAITING_REVIEWERS';
     const STATUS_IN_REVIEW           = 'IN_REVIEW';
     const STATUS_REVISION_REQUIRED   = 'REVISION_REQUIRED';
@@ -34,14 +35,16 @@ class Submission extends Model
         'submission_type_id', 'program_id', 'submitter_id',
         'title', 'abstract', 'status', 'current_version',
         'is_locked', 'metadata',
+        'current_stage_id', 'current_stage_entered_at',
     ];
 
     protected function casts(): array
     {
         return [
-            'is_locked'       => 'boolean',
-            'metadata'        => 'array',
-            'current_version' => 'integer',
+            'is_locked'                => 'boolean',
+            'metadata'                 => 'array',
+            'current_version'          => 'integer',
+            'current_stage_entered_at' => 'datetime',
         ];
     }
 
@@ -50,6 +53,11 @@ class Submission extends Model
     public function submitter()
     {
         return $this->belongsTo(User::class, 'submitter_id');
+    }
+
+    public function currentStage()
+    {
+        return $this->belongsTo(StageDefinition::class, 'current_stage_id');
     }
 
     public function submissionType()

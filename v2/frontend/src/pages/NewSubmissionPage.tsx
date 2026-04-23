@@ -1,16 +1,17 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronLeft, ChevronRight, CheckCircle2, Upload,
-  X, FileText, Loader2, AlertCircle,
+  X, FileText, Loader2, AlertCircle, UserPlus,
 } from 'lucide-react'
 import api from '../lib/axios'
-import type { SubmissionType, Program } from '../types/submissions'
+import { useAuthStore } from '../stores/authStore'
+import type { SubmissionType } from '../types/submissions'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const STEPS = ['Type & Program', 'Details', 'Files', 'Review & Submit'] as const
+const STEPS = ['Type', 'Details', 'Authors', 'Files', 'Review & Submit'] as const
 
 // ── Step Indicator ────────────────────────────────────────────────────────────
 
@@ -119,9 +120,14 @@ function FileDropzone({
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
+interface PendingAuthor {
+  name: string
+  email: string
+  affiliation: string
+}
+
 interface FormState {
   submission_type_id: string
-  program_id: string
   title: string
   abstract: string
   change_summary: string
@@ -130,42 +136,46 @@ interface FormState {
 export default function NewSubmissionPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const user = useAuthStore((s) => s.user)
+
+  // Redirect non-students away from this page
+  useEffect(() => {
+    if (user && !user.roles?.includes('student')) {
+      navigate('/submissions', { replace: true })
+    }
+  }, [user, navigate])
 
   const [step, setStep] = useState(1)
   const [form, setForm] = useState<FormState>({
-    submission_type_id: '', program_id: '', title: '', abstract: '', change_summary: '',
+    submission_type_id: '', title: '', abstract: '', change_summary: '',
   })
   const [files, setFiles] = useState<FileItem[]>([])
   const [error, setError] = useState('')
   const [submissionId, setSubmissionId] = useState<string | null>(null)
 
-  // Fetch types and programs
+  // Co-authors state
+  const [coAuthors, setCoAuthors] = useState<PendingAuthor[]>([])
+  const [showCoAuthorForm, setShowCoAuthorForm] = useState(false)
+  const [coAuthorForm, setCoAuthorForm] = useState<PendingAuthor>({ name: '', email: '', affiliation: '' })
+  const [coAuthorError, setCoAuthorError] = useState('')
+
+  // Fetch submission types
   const { data: typesData } = useQuery<{ data: SubmissionType[] }>({
     queryKey: ['submission-types'],
     queryFn: () => api.get('/submission-types').then((r) => r.data),
   })
 
-  const { data: programsData } = useQuery<{ data: Program[] }>({
-    queryKey: ['programs-all'],
-    queryFn: () => api.get('/programs', { params: { all: true } }).then((r) => r.data),
-  })
-
   const types = typesData?.data ?? []
-  const programs = programsData?.data ?? []
   const selectedType = types.find((t) => t.id === form.submission_type_id)
 
   // Mutations
   const saveDraftMutation = useMutation({
     mutationFn: () => api.post('/submissions', {
       submission_type_id: form.submission_type_id,
-      program_id: form.program_id || null,
+      program_id: user?.program_id ?? null,
       title: form.title,
       abstract: form.abstract || null,
     }),
-    onSuccess: (r) => {
-      setSubmissionId(r.data.data.id)
-      setStep(3)
-    },
     onError: () => setError('Failed to save draft. Please try again.'),
   })
 
@@ -191,26 +201,68 @@ export default function NewSubmissionPage() {
 
   const setField = (k: keyof FormState, v: string) => setForm((f) => ({ ...f, [k]: v }))
 
+  const addCoAuthor = () => {
+    setCoAuthorError('')
+    const name = coAuthorForm.name.trim()
+    const email = coAuthorForm.email.trim().toLowerCase()
+    const affiliation = coAuthorForm.affiliation.trim()
+    if (!name) { setCoAuthorError('Name is required.'); return }
+    if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) { setCoAuthorError('A valid email is required.'); return }
+    if (coAuthors.some((a) => a.email === email)) { setCoAuthorError('This email is already added.'); return }
+    setCoAuthors((prev) => [...prev, { name, email, affiliation }])
+    setCoAuthorForm({ name: '', email: '', affiliation: '' })
+    setShowCoAuthorForm(false)
+  }
+
+  const removeCoAuthor = (email: string) => {
+    setCoAuthors((prev) => prev.filter((a) => a.email !== email))
+  }
+
   // Step navigation
   const canNext = (): boolean => {
     if (step === 1) return !!form.submission_type_id
     if (step === 2) return form.title.trim().length >= 3
-    if (step === 3) return files.some((f) => !f.error)
+    if (step === 3) return true   // Authors step is always optional
+    if (step === 4) return files.some((f) => !f.error)
     return true
   }
 
   const next = async () => {
     setError('')
     if (step === 2) {
-      // Save draft when moving from details to files
-      if (!submissionId) await saveDraftMutation.mutateAsync()
-      else setStep(3)
+      // Save draft when moving from details to authors
+      if (!submissionId) {
+        try {
+          const res = await saveDraftMutation.mutateAsync()
+          const newId: string = res.data.data.id
+          setSubmissionId(newId)
+          setStep(3)
+        } catch {
+          // error already set by onError
+        }
+      } else {
+        setStep(3)
+      }
     } else if (step === 3) {
+      // Post any pending co-authors, then advance to files
+      if (submissionId && coAuthors.length > 0) {
+        try {
+          await Promise.all(
+            coAuthors.map((a) =>
+              api.post(`/submissions/${submissionId}/authors`, a).catch(() => {})
+            )
+          )
+        } catch {
+          // non-blocking – continue even if a co-author POST fails
+        }
+      }
+      setStep(4)
+    } else if (step === 4) {
       // Upload files
       if (submissionId) {
         try {
           await uploadMutation.mutateAsync(submissionId)
-          setStep(4)
+          setStep(5)
         } catch {
           setError('File upload failed. Please try again.')
         }
@@ -256,7 +308,7 @@ export default function NewSubmissionPage() {
 
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
 
-        {/* Step 1: Type + Program */}
+        {/* Step 1: Submission Type */}
         {step === 1 && (
           <div className="space-y-5">
             <div>
@@ -286,19 +338,6 @@ export default function NewSubmissionPage() {
                   </label>
                 ))}
               </div>
-            </div>
-            <div>
-              <label className="text-sm font-medium text-gray-700 mb-1 block">Program <span className="text-gray-400 font-normal">(optional)</span></label>
-              <select
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                value={form.program_id}
-                onChange={(e) => setField('program_id', e.target.value)}
-              >
-                <option value="">— Select program —</option>
-                {programs.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name} ({p.school})</option>
-                ))}
-              </select>
             </div>
           </div>
         )}
@@ -331,8 +370,102 @@ export default function NewSubmissionPage() {
           </div>
         )}
 
-        {/* Step 3: File upload */}
-        {step === 3 && selectedType && (
+        {/* Step 3: Co-Authors */}
+        {step === 3 && (
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700">Co-Authors <span className="text-gray-400 font-normal">(optional)</span></h3>
+              <p className="text-xs text-gray-500 mt-0.5 mb-3">
+                Add co-authors who contributed to this submission. They will receive an email invitation to create an account.
+              </p>
+
+              {/* Added co-authors list */}
+              {coAuthors.length > 0 && (
+                <ul className="space-y-2 mb-3">
+                  {coAuthors.map((a, _i) => (
+                    <li key={a.email} className="flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900 truncate">{a.name}</p>
+                        <p className="text-xs text-gray-500 truncate">{a.email}{a.affiliation ? ` · ${a.affiliation}` : ''}</p>
+                      </div>
+                      <button
+                        onClick={() => removeCoAuthor(a.email)}
+                        className="text-gray-400 hover:text-red-500 flex-shrink-0"
+                        title="Remove co-author"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {/* Toggle add form */}
+              {!showCoAuthorForm ? (
+                <button
+                  onClick={() => setShowCoAuthorForm(true)}
+                  className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 font-medium"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  Add Co-Author
+                </button>
+              ) : (
+                <div className="border border-gray-200 rounded-xl p-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 mb-1 block">Full Name *</label>
+                      <input
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g. Jane Smith"
+                        value={coAuthorForm.name}
+                        onChange={(e) => setCoAuthorForm((f) => ({ ...f, name: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-600 mb-1 block">Email *</label>
+                      <input
+                        type="email"
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g. jane@example.com"
+                        value={coAuthorForm.email}
+                        onChange={(e) => setCoAuthorForm((f) => ({ ...f, email: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-600 mb-1 block">Affiliation <span className="text-gray-400">(optional)</span></label>
+                    <input
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="e.g. City University of Hong Kong"
+                      value={coAuthorForm.affiliation}
+                      onChange={(e) => setCoAuthorForm((f) => ({ ...f, affiliation: e.target.value }))}
+                    />
+                  </div>
+                  {coAuthorError && (
+                    <p className="text-xs text-red-600">{coAuthorError}</p>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={addCoAuthor}
+                      className="px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700"
+                    >
+                      Add
+                    </button>
+                    <button
+                      onClick={() => { setShowCoAuthorForm(false); setCoAuthorError('') }}
+                      className="px-3 py-1.5 border border-gray-200 text-gray-600 text-xs rounded-lg hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: File upload */}
+        {step === 4 && selectedType && (
           <div className="space-y-4">
             <div>
               <h3 className="text-sm font-semibold text-gray-700 mb-1">Upload Document(s)</h3>
@@ -363,20 +496,14 @@ export default function NewSubmissionPage() {
           </div>
         )}
 
-        {/* Step 4: Review + Submit */}
-        {step === 4 && (
+        {/* Step 5: Review + Submit */}
+        {step === 5 && (
           <div className="space-y-4">
             <h3 className="text-sm font-semibold text-gray-900">Review your submission</h3>
             <dl className="space-y-3">
               <div className="flex gap-4">
                 <dt className="text-sm text-gray-500 w-28 flex-shrink-0">Type</dt>
                 <dd className="text-sm font-medium text-gray-900">{selectedType?.label ?? '—'}</dd>
-              </div>
-              <div className="flex gap-4">
-                <dt className="text-sm text-gray-500 w-28 flex-shrink-0">Program</dt>
-                <dd className="text-sm font-medium text-gray-900">
-                  {programs.find((p) => p.id === form.program_id)?.name ?? '—'}
-                </dd>
               </div>
               <div className="flex gap-4">
                 <dt className="text-sm text-gray-500 w-28 flex-shrink-0">Title</dt>
@@ -386,6 +513,14 @@ export default function NewSubmissionPage() {
                 <div className="flex gap-4">
                   <dt className="text-sm text-gray-500 w-28 flex-shrink-0">Abstract</dt>
                   <dd className="text-sm text-gray-700 line-clamp-3">{form.abstract}</dd>
+                </div>
+              )}
+              {coAuthors.length > 0 && (
+                <div className="flex gap-4">
+                  <dt className="text-sm text-gray-500 w-28 flex-shrink-0">Co-Authors</dt>
+                  <dd className="text-sm text-gray-700">
+                    {coAuthors.map((a) => a.name).join(', ')}
+                  </dd>
                 </div>
               )}
               <div className="flex gap-4">
@@ -417,7 +552,7 @@ export default function NewSubmissionPage() {
         </button>
 
         <div className="flex items-center gap-2">
-          {step === 4 && (
+          {step === 5 && (
             <button
               onClick={() => handleFinalSubmit(true)}
               disabled={loading}
@@ -426,7 +561,7 @@ export default function NewSubmissionPage() {
               Save as Draft
             </button>
           )}
-          {step < 4 ? (
+          {step < 5 ? (
             <button
               onClick={next}
               disabled={!canNext() || loading}

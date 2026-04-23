@@ -9,11 +9,21 @@ import { useThemeStore } from '../../stores/themeStore'
 
 export default function AppShell() {
   const isDark = useThemeStore((s) => s.isDark)
+  const accentColor = useThemeStore((s) => s.accentColor)
 
   // Sync dark class on <html>
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark)
   }, [isDark])
+
+  // Sync user accent color CSS variable
+  useEffect(() => {
+    if (accentColor) {
+      document.documentElement.style.setProperty('--color-user-accent', accentColor)
+    } else {
+      document.documentElement.style.removeProperty('--color-user-accent')
+    }
+  }, [accentColor])
 
   return (
     <ToastProvider>
@@ -26,7 +36,7 @@ export default function AppShell() {
           <div className="hidden md:flex">
             <Sidebar />
           </div>
-          <main className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900 p-4 md:p-6 pb-20 md:pb-6">
+          <main className="flex-1 overflow-y-auto overflow-x-hidden bg-gray-50 dark:bg-gray-900 p-4 md:p-6 pb-20 md:pb-6">
             <Outlet />
           </main>
         </div>

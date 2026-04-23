@@ -10,11 +10,17 @@ import {
   ShieldCheck,
   Tag,
   BookOpen,
+  BookMarked,
   UserCog,
   Shield,
   Webhook,
   Gavel,
   MessageSquare,
+  Calendar,
+  TrendingUp,
+  ClipboardList,
+  Megaphone,
+  ShieldAlert,
   type LucideIcon,
 } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -50,15 +56,27 @@ const navSections: NavSection[] = [
         roles: ['admin', 'coordinator', 'reviewer', 'student'],
       },
       {
-        label: 'Reviews',
+        label: 'Assignments',
         to: '/reviews',
         icon: ShieldCheck,
         roles: ['admin', 'coordinator', 'reviewer'],
       },
       {
+        label: 'My Analytics',
+        to: '/reviewer-analytics',
+        icon: TrendingUp,
+        roles: ['reviewer'],
+      },
+      {
         label: 'Notifications',
         to: '/notifications',
         icon: Bell,
+        roles: ['admin', 'coordinator', 'reviewer', 'student'],
+      },
+      {
+        label: 'Calendar',
+        to: '/calendar',
+        icon: Calendar,
         roles: ['admin', 'coordinator', 'reviewer', 'student'],
       },
       {
@@ -96,6 +114,12 @@ const navSections: NavSection[] = [
         icon: UserCog,
         roles: ['admin', 'coordinator'],
       },
+      {
+        label: 'Programs',
+        to: '/programs',
+        icon: BookMarked,
+        roles: ['admin', 'coordinator'],
+      },
     ],
   },
   {
@@ -120,6 +144,12 @@ const navSections: NavSection[] = [
         roles: ['admin', 'coordinator'],
       },
       {
+        label: 'Review Management',
+        to: '/review-management',
+        icon: ClipboardList,
+        roles: ['admin', 'coordinator'],
+      },
+      {
         label: 'Appeals',
         to: '/appeals',
         icon: MessageSquare,
@@ -130,6 +160,18 @@ const navSections: NavSection[] = [
         to: '/webhooks',
         icon: Webhook,
         roles: ['admin'],
+      },
+      {
+        label: 'Announcements',
+        to: '/announcements',
+        icon: Megaphone,
+        roles: ['admin', 'coordinator'],
+      },
+      {
+        label: 'Custom Roles',
+        to: '/custom-roles',
+        icon: ShieldAlert,
+        roles: ['admin', 'coordinator'],
       },
       {
         label: 'Settings',

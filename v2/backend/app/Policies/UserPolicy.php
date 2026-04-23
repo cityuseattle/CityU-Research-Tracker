@@ -25,27 +25,31 @@ class UserPolicy
     }
 
     /**
-     * Only admins can create users.
+     * Admins and coordinators can create users.
      */
     public function create(User $actor): bool
     {
-        return $actor->hasRole('admin');
+        return $actor->hasAnyRole(['admin', 'coordinator']);
     }
 
     /**
-     * Admins can update anyone. Users can update themselves (non-role fields).
+     * Admins can update anyone.
+     * Coordinators can update others (only org/org_role/is_active — enforced in controller).
+     * Users can update themselves.
      */
     public function update(User $actor, User $target): bool
     {
-        return $actor->hasRole('admin') || $actor->id === $target->id;
+        if ($actor->hasRole('admin')) return true;
+        if ($actor->hasRole('coordinator') && $actor->id !== $target->id) return true;
+        return $actor->id === $target->id;
     }
 
     /**
-     * Only admins can deactivate/delete users. Cannot delete self.
+     * Admins and coordinators can activate/deactivate users (not self).
      */
     public function delete(User $actor, User $target): bool
     {
-        return $actor->hasRole('admin') && $actor->id !== $target->id;
+        return $actor->hasAnyRole(['admin', 'coordinator']) && $actor->id !== $target->id;
     }
 
     /**

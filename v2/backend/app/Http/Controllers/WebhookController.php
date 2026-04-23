@@ -49,6 +49,10 @@ class WebhookController extends Controller
             'is_active'   => ['boolean'],
         ]);
 
+        if ($this->isPrivateUrl($data['url'])) {
+            return response()->json(['message' => 'Webhook URL must be a publicly reachable address.'], 422);
+        }
+
         $secret = Str::random(40);
         $sub = WebhookSubscription::create([
             'url'         => $data['url'],
@@ -88,6 +92,10 @@ class WebhookController extends Controller
             'is_active'   => ['boolean'],
             'rotate_secret' => ['boolean'],
         ]);
+
+        if (isset($data['url']) && $this->isPrivateUrl($data['url'])) {
+            return response()->json(['message' => 'Webhook URL must be a publicly reachable address.'], 422);
+        }
 
         if (!empty($data['rotate_secret'])) {
             $secret = Str::random(40);
@@ -145,6 +153,60 @@ class WebhookController extends Controller
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Returns true if the URL resolves to a private/loopback/link-local address (SSRF guard).
+     *
+     * NOTE: This must be called both at subscription creation/update time AND immediately
+     * before firing the HTTP request (in the delivery job), to prevent DNS-rebinding attacks
+     * where a domain resolves to a public IP at validation time but a private IP at delivery time.
+     */
+    private function isPrivateUrl(string $url): bool
+    {
+        $host = parse_url($url, PHP_URL_HOST);
+        if (!$host) {
+            return true;
+        }
+
+        // Block non-HTTPS schemes
+        $scheme = strtolower(parse_url($url, PHP_URL_SCHEME) ?? '');
+        if (!in_array($scheme, ['https', 'http'], true)) {
+            return true;
+        }
+
+        // If the host is an IP address, check ranges directly
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            return !filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
+        }
+
+        // Block common internal/metadata hostnames (prevents DNS rebinding to these targets)
+        $lower = strtolower($host);
+        $blockedHosts = [
+            'localhost',
+            'metadata.google.internal',   // GCP metadata
+            'instance-data',              // Azure legacy metadata alias
+        ];
+        if (in_array($lower, $blockedHosts, true)) {
+            return true;
+        }
+
+        // Block by suffix
+        $blockedSuffixes = ['.local', '.internal', '.localdomain', '.localhost'];
+        foreach ($blockedSuffixes as $suffix) {
+            if (str_ends_with($lower, $suffix)) {
+                return true;
+            }
+        }
+
+        // Resolve the hostname and check resulting IP (FILTER_FLAG_NO_RES_RANGE covers 169.254.0.0/16)
+        $ip = gethostbyname($host);
+        if ($ip === $host) {
+            // DNS resolution failed — treat as private to be safe
+            return true;
+        }
+
+        return !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
+    }
 
     private function toResource(WebhookSubscription $sub): array
     {

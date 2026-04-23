@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Search, Edit2, Trash2, UserCheck, UserX, Key, Users, FolderOpen, X, Check, Lock, Unlock, RefreshCw, Eye, EyeOff, Copy, CheckCheck, Layers } from 'lucide-react'
 import { clsx } from 'clsx'
 import api from '../lib/axios'
 import { useToastHelpers } from '../lib/toast'
+import { useAuthStore } from '../stores/authStore'
 import type {
   User, Group, CreateUserRequest, UpdateUserRequest,
   GroupMember, PaginatedResponse, GroupType,
@@ -104,24 +105,47 @@ const btnSecondary = 'inline-flex items-center gap-2 px-4 py-2 border border-gra
 
 // ── User form modal ───────────────────────────────────────────────────────────
 
-function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; onClose: () => void; onSaved: () => void }) {
+function UserFormModal({
+  initial,
+  onClose,
+  onSaved,
+  actorIsAdmin = true,
+}: {
+  initial?: User | null
+  onClose: () => void
+  onSaved: () => void
+  actorIsAdmin?: boolean
+}) {
   const isEdit = !!initial
+  // Coordinator in edit mode sees only org / is_active fields
+  const coordinatorEditMode = !actorIsAdmin && isEdit
+
   const [form, setForm] = useState({
-    first_name: initial?.first_name ?? '',
-    last_name: initial?.last_name ?? '',
-    email: initial?.email ?? '',
-    organization: initial?.organization ?? '',
-    org_role: initial?.org_role ?? '',
-    password: '', password_confirmation: '',
-    roles: (initial?.roles ?? ['student']) as Role[],
-    is_active: initial?.is_active ?? true,
+    first_name:            initial?.first_name ?? '',
+    last_name:             initial?.last_name ?? '',
+    email:                 initial?.email ?? '',
+    organization:          initial?.organization ?? '',
+    org_role:              initial?.org_role ?? '',
+    program_id:            initial?.program_id ?? '',
+    password:              '', password_confirmation: '',
+    roles:                 (initial?.roles ?? ['student']) as Role[],
+    is_active:             initial?.is_active ?? true,
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [showPwd, setShowPwd] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  // Coordinator group scope state
+  // Programs list (for dropdown)
+  const { data: programsData } = useQuery<{ data?: Array<{ id: string; name: string }> } | Array<{ id: string; name: string }>>({
+    queryKey: ['programs-picker'],
+    queryFn: () => api.get('/programs').then(r => r.data),
+  })
+  const programs: Array<{ id: string; name: string }> = Array.isArray(programsData)
+    ? programsData
+    : (programsData?.data ?? [])
+
+  // Coordinator group scope state (admin only, edit only)
   const isCoordinator = form.roles.includes('coordinator')
   const [coordGroupErr, setCoordGroupErr] = useState('')
   const [addingGroup, setAddingGroup] = useState(false)
@@ -130,13 +154,13 @@ function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; o
   const { data: coordGroups, refetch: refetchCoordGroups } = useQuery<{ data: Array<{id: string; name: string; type: string; assigned_at: string}> }>({
     queryKey: ['coordinator-groups', initial?.id],
     queryFn: () => api.get(`/users/${initial!.id}/coordinator-groups`).then(r => r.data),
-    enabled: isEdit && isCoordinator && !!initial?.id,
+    enabled: actorIsAdmin && isEdit && isCoordinator && !!initial?.id,
   })
 
   const { data: allGroupsData } = useQuery<{ data: Group[] }>({
     queryKey: ['groups-all-mini'],
     queryFn: () => api.get('/groups?per_page=200').then(r => r.data),
-    enabled: isEdit && isCoordinator,
+    enabled: actorIsAdmin && isEdit && isCoordinator,
   })
 
   const assignedGroupIds = new Set((coordGroups?.data ?? []).map(g => g.id))
@@ -185,6 +209,24 @@ function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; o
 
   const submit = async () => {
     setErrors({})
+    if (coordinatorEditMode) {
+      // Coordinator editing: only send allowed fields
+      setSaving(true)
+      try {
+        await api.patch(`/users/${initial!.id}`, {
+          organization: form.organization || null,
+          org_role:     form.org_role || null,
+          program_id:   form.program_id || null,
+          is_active:    form.is_active,
+        })
+        onSaved(); onClose()
+      } catch (err: any) {
+        const msg = err?.response?.data?.message ?? 'Failed to update user.'
+        setErrors({ _general: msg })
+      } finally { setSaving(false) }
+      return
+    }
+
     if (!form.first_name.trim()) return setErrors({ first_name: 'First name is required.' })
     if (!form.last_name.trim()) return setErrors({ last_name: 'Last name is required.' })
     if (!form.email.trim()) return setErrors({ email: 'Email (UPN) is required.' })
@@ -198,6 +240,7 @@ function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; o
           first_name: form.first_name, last_name: form.last_name,
           email: form.email, organization: form.organization || null,
           org_role: form.org_role || null, roles: form.roles, is_active: form.is_active,
+          program_id: form.program_id || null,
         } as UpdateUserRequest)
       } else {
         await api.post('/users', {
@@ -206,6 +249,7 @@ function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; o
           org_role: form.org_role || null,
           password: form.password, password_confirmation: form.password_confirmation,
           roles: form.roles, is_active: form.is_active,
+          program_id: form.program_id || null,
         } as CreateUserRequest)
       }
       onSaved(); onClose()
@@ -222,20 +266,27 @@ function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; o
     <Modal title={isEdit ? 'Edit User' : 'Create User'} onClose={onClose}>
       <div className="space-y-4">
         {errors._general && <p className="text-sm text-red-600 bg-red-50 rounded px-3 py-2">{errors._general}</p>}
-        <div className="grid grid-cols-2 gap-3">
-          <FormField label="First Name" error={errors.first_name}>
-            <input className={inputCls} value={form.first_name} placeholder="First name"
-              onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))} />
-          </FormField>
-          <FormField label="Last Name" error={errors.last_name}>
-            <input className={inputCls} value={form.last_name} placeholder="Last name"
-              onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))} />
-          </FormField>
-        </div>
-        <FormField label="Email Address (UPN)" error={errors.email}>
-          <input className={inputCls} type="email" value={form.email} placeholder="user@domain.com"
-            onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
-        </FormField>
+
+        {/* Name + email — hidden for coordinator in edit mode */}
+        {!coordinatorEditMode && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="First Name" error={errors.first_name}>
+                <input className={inputCls} value={form.first_name} placeholder="First name"
+                  onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))} />
+              </FormField>
+              <FormField label="Last Name" error={errors.last_name}>
+                <input className={inputCls} value={form.last_name} placeholder="Last name"
+                  onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))} />
+              </FormField>
+            </div>
+            <FormField label="Email Address (UPN)" error={errors.email}>
+              <input className={inputCls} type="email" value={form.email} placeholder="user@domain.com"
+                onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
+            </FormField>
+          </>
+        )}
+
         <FormField label="Organization" error={errors.organization}>
           <input className={inputCls} value={form.organization} placeholder="e.g. City University of Hong Kong"
             onChange={e => setForm(f => ({ ...f, organization: e.target.value }))} />
@@ -244,6 +295,22 @@ function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; o
           <input className={inputCls} value={form.org_role} placeholder="e.g. Professor, Research Associate"
             onChange={e => setForm(f => ({ ...f, org_role: e.target.value }))} />
         </FormField>
+
+        {/* Program */}
+        <FormField label="Program" error={errors.program_id}>
+          <select
+            className={inputCls}
+            value={form.program_id}
+            onChange={e => setForm(f => ({ ...f, program_id: e.target.value }))}
+          >
+            <option value="">— No program —</option>
+            {programs.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </FormField>
+
+        {/* Password — only shown in create mode */}
         {!isEdit && (
           <>
             <FormField label="Password" error={errors.password}>
@@ -279,17 +346,23 @@ function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; o
             </FormField>
           </>
         )}
-        <FormField label="System Roles" error={errors.roles}>
-          <div className="flex flex-wrap gap-2 mt-1">
-            {ROLES.map(role => (
-              <button key={role} type="button" onClick={() => toggleRole(role)}
-                className={clsx('px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors capitalize',
-                  form.roles.includes(role) ? 'border-brand-800 bg-brand-800 text-white' : 'border-gray-300 text-gray-600 hover:border-brand-600')}>
-                {role}
-              </button>
-            ))}
-          </div>
-        </FormField>
+
+        {/* System Roles — hidden for coordinator in edit mode; admin role hidden for coordinator actors */}
+        {!coordinatorEditMode && (
+          <FormField label="System Roles" error={errors.roles}>
+            <div className="flex flex-wrap gap-2 mt-1">
+              {ROLES.filter(role => actorIsAdmin || role !== 'admin').map(role => (
+                <button key={role} type="button" onClick={() => toggleRole(role)}
+                  className={clsx('px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors capitalize',
+                    form.roles.includes(role) ? 'border-brand-800 bg-brand-800 text-white' : 'border-gray-300 text-gray-600 hover:border-brand-600')}>
+                  {role}
+                </button>
+              ))}
+            </div>
+          </FormField>
+        )}
+
+        {/* Active toggle — edit only */}
         {isEdit && (
           <FormField label="Status">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -298,8 +371,9 @@ function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; o
             </label>
           </FormField>
         )}
-        {/* ── Coordinator group scope ── */}
-        {isEdit && isCoordinator && (
+
+        {/* Coordinator group scope — admin only */}
+        {actorIsAdmin && isEdit && isCoordinator && (
           <div className="border border-purple-200 rounded-lg p-4 bg-purple-50/50">
             <div className="flex items-center gap-2 mb-3">
               <Layers className="w-4 h-4 text-purple-600" />
@@ -346,6 +420,7 @@ function UserFormModal({ initial, onClose, onSaved }: { initial?: User | null; o
             )}
           </div>
         )}
+
         <div className="flex justify-end gap-3 pt-2">
           <button className={btnSecondary} onClick={onClose}>Cancel</button>
           <button className={btnPrimary} onClick={submit} disabled={saving}>{saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create User'}</button>
@@ -449,6 +524,8 @@ function ResetPasswordModal({ user, onClose }: { user: User; onClose: () => void
 function UsersTab() {
   const qc = useQueryClient()
   const toast = useToastHelpers()
+  const actorUser = useAuthStore(s => s.user)
+  const actorIsAdmin = actorUser?.roles?.includes('admin') ?? false
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState('')
   const [page, setPage] = useState(1)
@@ -572,7 +649,9 @@ function UsersTab() {
                           {!user.is_emergency_admin && (
                             <button title="Edit" onClick={() => setEditUser(user)} className="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-900"><Edit2 className="w-4 h-4" /></button>
                           )}
-                          <button title="Reset Password" onClick={() => setResetUser(user)} className="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-900"><Key className="w-4 h-4" /></button>
+                          {actorIsAdmin && (
+                            <button title="Reset Password" onClick={() => setResetUser(user)} className="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-900"><Key className="w-4 h-4" /></button>
+                          )}
                           {user.locked_at ? (
                             <button title="Unlock Account" onClick={() => unlockUser.mutate(user)}
                               className="p-1.5 rounded hover:bg-green-50 text-amber-600 hover:text-green-700">
@@ -605,8 +684,8 @@ function UsersTab() {
         )}
       </div>
 
-      {showCreate && <UserFormModal onClose={() => setShowCreate(false)} onSaved={refresh} />}
-      {editUser   && <UserFormModal initial={editUser} onClose={() => setEditUser(null)} onSaved={refresh} />}
+      {showCreate && <UserFormModal onClose={() => setShowCreate(false)} onSaved={refresh} actorIsAdmin={actorIsAdmin} />}
+      {editUser   && <UserFormModal initial={editUser} onClose={() => setEditUser(null)} onSaved={refresh} actorIsAdmin={actorIsAdmin} />}
       {resetUser  && <ResetPasswordModal user={resetUser} onClose={() => setResetUser(null)} />}
     </div>
   )

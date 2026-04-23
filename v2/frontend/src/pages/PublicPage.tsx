@@ -2,6 +2,9 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
 import cityuLogo from '../assets/city-university-logo.svg'
+import api from '../lib/axios'
+import { useAuthStore } from '../stores/authStore'
+import type { AuthUser } from '../types/auth'
 
 /* ── Submission types data ────────────────────────────────────────────────── */
 interface StageDetail { title: string; desc: string; badge?: string }
@@ -145,7 +148,31 @@ const GLOBAL_STYLES = `
 /* ── Main component ───────────────────────────────────────────────────────── */
 export default function PublicPage() {
   const navigate = useNavigate()
+  const { setAuth } = useAuthStore()
   const [activeView, setActiveView] = useState<'about' | 'submissions'>('about')
+
+  // Handle SSO callback: exchange short-lived code for Sanctum token
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const ssoCode = params.get('sso_code')
+    if (!ssoCode) return
+
+    // Remove the code from the URL immediately to prevent it appearing in history
+    window.history.replaceState({}, '', window.location.pathname)
+
+    api.post<{ token: string }>('/auth/sso-exchange', { code: ssoCode })
+      .then(async (res) => {
+        const token = res.data.token
+        const meRes = await api.get<AuthUser>('/auth/me', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        setAuth(meRes.data, token)
+        navigate('/dashboard', { replace: true })
+      })
+      .catch(() => {
+        // Exchange failed — stay on public page; user can retry login
+      })
+  }, [navigate, setAuth])
 
   const NAV_ITEMS = [
     { label: 'About', view: 'about' as const },

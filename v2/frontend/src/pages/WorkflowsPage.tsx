@@ -41,6 +41,15 @@ function StageEditor({
   stages: Omit<StageDefinition, 'id' | 'workflow_id'>[]
   onChange: (s: Omit<StageDefinition, 'id' | 'workflow_id'>[]) => void
 }) {
+  // Load custom roles for the role label datalist
+  const { data: customRolesData } = useQuery<{ data: { id: string; name: string }[] }>({
+    queryKey: ['custom-roles'],
+    queryFn: () => api.get('/admin/custom-roles').then((r) => r.data),
+    staleTime: 60_000,
+  })
+  const customRoles = customRolesData?.data ?? []
+  const SYSTEM_ROLE_LABELS = ['reviewer', 'coordinator', 'admin', 'committee member', 'external reviewer']
+
   const add = () => onChange([...stages, { ...DEFAULT_STAGE, order: stages.length + 1 }])
   const remove = (i: number) => onChange(stages.filter((_, idx) => idx !== i).map((s, idx) => ({ ...s, order: idx + 1 })))
   const update = (i: number, patch: Partial<Omit<StageDefinition, 'id' | 'workflow_id'>>) =>
@@ -118,9 +127,14 @@ function StageEditor({
                 <input
                   className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
                   placeholder="e.g. reviewer, committee"
+                  list={`role-options-${i}`}
                   value={s.stage_role_label}
                   onChange={(e) => update(i, { stage_role_label: e.target.value })}
                 />
+                <datalist id={`role-options-${i}`}>
+                  {SYSTEM_ROLE_LABELS.map((r) => <option key={r} value={r} />)}
+                  {customRoles.map((r) => <option key={r.id} value={r.name} />)}
+                </datalist>
               </div>
               <div>
                 <label className="text-xs text-gray-500 mb-0.5 block">Due days</label>

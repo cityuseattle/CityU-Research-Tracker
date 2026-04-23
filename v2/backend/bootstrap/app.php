@@ -15,6 +15,9 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'role' => \App\Http\Middleware\EnsureRole::class,
         ]);
+
+        // Append security headers to all API responses
+        $middleware->appendToGroup('api', \App\Http\Middleware\SecureHeaders::class);
     })
     ->withExceptions(function (Exceptions $exceptions) {
         $exceptions->render(function (\Illuminate\Auth\AuthenticationException $e, $request) {
