@@ -1,535 +1,275 @@
-# RRP v2 — Getting Started
+﻿# CityU Research Review Portal — Getting Started
 
-## Prerequisites
-
-- **VM**: Existing Azure VM with Docker + Docker Compose v2 installed  
-- **Port**: v1 WordPress app stays on port 80; v2 runs on **port 8080**
-- **Local**: Node 22, PHP 8.3, Composer 2 for local dev
+> **Repository:** https://github.com/cityuseattle/CityU-Research-Tracker.git  
+> **Stack:** Laravel 10 · PHP 8.4 · PostgreSQL 16 · Redis 7 · React 18 · TypeScript · Vite · Tailwind CSS
 
 ---
 
-## Local Development
+## Table of Contents
 
-### 1. Backend (Laravel)
+1. [Prerequisites](#1-prerequisites)
+2. [Clone the Repository](#2-clone-the-repository)
+3. [Quick Start — Docker (recommended)](#3-quick-start--docker-recommended)
+4. [Local Development (no Docker)](#4-local-development-no-docker)
+5. [Production Deployment](#5-production-deployment)
+6. [Default Demo Accounts](#6-default-demo-accounts)
+7. [Project Structure](#7-project-structure)
+8. [API Reference (Phase 1)](#8-api-reference-phase-1)
+
+---
+
+## 1. Prerequisites
+
+### Docker path (fastest)
+
+| Tool | Minimum version | Install |
+|---|---|---|
+| Docker Engine | 24+ | https://docs.docker.com/engine/install/ |
+| Docker Compose | v2 (plugin) | bundled with Docker Desktop / Engine 24+ |
+
+Works on Linux, macOS (Docker Desktop), and Windows (WSL 2 + Docker Desktop).
+
+### Local dev path (no Docker)
+
+| Tool | Version | Install |
+|---|---|---|
+| PHP | 8.4 | https://www.php.net/downloads |
+| Composer | 2 | https://getcomposer.org/ |
+| Node.js | 22 | https://nodejs.org/ |
+| PostgreSQL | 16 | https://www.postgresql.org/download/ |
+| Redis | 7 | https://redis.io/docs/getting-started/ |
+
+---
+
+## 2. Clone the Repository
 
 ```bash
-cd v2/backend
+git clone https://github.com/cityuseattle/CityU-Research-Tracker.git
+cd CityU-Research-Tracker
+```
+
+---
+
+## 3. Quick Start — Docker (recommended)
+
+The `deploy/quick-start-docker.sh` script handles everything: generates `.env` with random credentials, builds images, starts containers, runs migrations, and optionally provisions SSL.
+
+### Local development (http://localhost:8080)
+
+```bash
+bash deploy/quick-start-docker.sh --port 8080
+```
+
+### Local on the default port (http://localhost)
+
+```bash
+bash deploy/quick-start-docker.sh
+```
+
+### Production server with SSL
+
+```bash
+export ADMIN_EMAIL=admin@myorg.com
+sudo bash deploy/quick-start-docker.sh \
+  --domain portal.myorg.com \
+  --https \
+  --no-seed
+```
+
+### What the script does
+
+1. Checks Docker and Docker Compose are installed
+2. Generates a `.env` file with random `APP_KEY`, `DB_PASSWORD`, and `REDIS_PASSWORD`
+3. Sets `APP_URL`, `SESSION_DOMAIN`, and `SANCTUM_STATEFUL_DOMAINS` from `--domain`
+4. Runs `docker compose up -d --build`
+5. Waits until the `rrp_app` container is healthy
+6. Runs `php artisan migrate --force` and `storage:link`
+7. Optionally seeds demo accounts (omit with `--no-seed` for production)
+8. Optionally provisions a Let's Encrypt certificate (`--https`)
+9. Prints the portal URL and useful management commands
+
+### Managing the running stack
+
+```bash
+# View live logs
+docker compose logs -f app
+docker compose logs -f worker
+
+# Open a shell in the app container
+docker exec -it rrp_app bash
+
+# Run any Artisan command
+docker exec rrp_app php artisan <command>
+
+# Reload config after editing .env
+docker exec rrp_app php artisan config:cache
+
+# Stop all services (data preserved in Docker volumes)
+docker compose down
+
+# Stop and wipe all data — DESTRUCTIVE
+docker compose down -v
+```
+
+---
+
+## 4. Local Development (no Docker)
+
+### Backend (Laravel)
+
+```bash
+cd backend
 
 # Install PHP dependencies
 composer install
 
-# Copy env
+# Copy and edit the environment file
 cp .env.example .env
-
-# Edit .env — set DB_HOST=127.0.0.1, your local PG credentials, etc.
+# Set DB_HOST=127.0.0.1, DB_PASSWORD, REDIS_PASSWORD, etc.
 nano .env
 
-# Generate app key
+# Generate the application key
 php artisan key:generate
 
-# Run migrations
-php artisan migrate
+# Run migrations and seed demo data
+php artisan migrate --seed
 
-# Seed demo data
-php artisan db:seed
-
-# Start dev server (port 8000)
+# Start the development server (port 8000)
 php artisan serve
 ```
 
-### 2. Frontend (React)
+### Frontend (React)
 
 ```bash
-cd v2/frontend
+cd frontend
 
-# Install dependencies
+# Install Node dependencies
 npm install
 
-# Start Vite dev server (port 5173, proxies /api → :8000)
+# Start the Vite dev server (port 5173, proxies /api -> :8000)
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173)
+Open http://localhost:5173
 
-### Demo credentials (after seeding)
-
-| Email | Password | Role |
-|---|---|---|
-| admin@rrp.local | Admin@RRP2026! | Admin |
-| coordinator1@rrp.local | Coord@RRP2026! | Coordinator |
-| reviewer1@rrp.local | Review@RRP2026! | Reviewer |
-| student1@rrp.local | Student@RRP2026! | Student |
+> The Vite dev server proxies `/api/*` and `/sanctum/*` requests to `http://localhost:8000` automatically — no CORS setup needed during local dev.
 
 ---
 
-## VM Deployment (port 8080)
+## 5. Production Deployment
 
-### First-time setup
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the full guide covering all deployment scenarios. Quick reference:
+
+| Scenario | Command |
+|---|---|
+| Any machine with Docker | `bash deploy/quick-start-docker.sh --domain portal.myorg.com --https --no-seed` |
+| Bare-metal Ubuntu 22/24 | `sudo bash deploy/install.sh --domain portal.myorg.com --email admin@myorg.com` |
+| Remote cloud VM (Azure / AWS / GCP / etc.) | See below |
+
+### Remote cloud VM (from your local machine)
 
 ```bash
-# From your local machine — sync code to VM and run setup
-cd v2
-./deploy-vm.sh
+# Set your VM connection details
+export VM_HOST=YOUR_VM_IP        # VM public IP address
+export VM_USER=azureadmin        # SSH username (azureadmin for Azure, ec2-user for AWS, etc.)
+export SSH_KEY=~/.ssh/id_rsa     # Path to your SSH private key
 
-# Then SSH into the VM and run setup
-ssh azureuser@rcgapimtest.eastus2.cloudapp.azure.com
-cd /opt/rrp-v2
-bash setup.sh
+# Deploy to the VM
+bash deploy/install-remote.sh \
+  --domain portal.myorg.com \
+  --email  admin@myorg.com
 ```
 
-`setup.sh` will:
-1. Generate `.env.production` with random DB/Redis passwords  
-2. Start Docker services  
-3. Run migrations  
-4. Optionally seed demo data  
+The script copies the repository to `/opt/rrp-v2/` on the VM, installs Docker if missing, generates a `.env` with fresh credentials, and starts the stack.
 
-The app will be available at: `http://rcgapimtest.eastus2.cloudapp.azure.com:8080`
+### After first deployment
 
-### Subsequent deploys
-
-```bash
-cd v2
-./deploy-vm.sh
-```
+1. **Change all default passwords** — Admin > User Management
+2. **Set your organisation name** — Admin > Settings > Organisation
+3. **Configure email** — Admin > Settings > Email
+4. **Run the smoke-test checklist** — `deploy/smoke-test-checklist.md`
 
 ---
 
-## Project Structure
+## 6. Default Demo Accounts
 
-```
-v2/
-├── backend/                 Laravel 11 API
-│   ├── app/
-│   │   ├── Http/
-│   │   │   ├── Controllers/
-│   │   │   │   ├── AuthController.php     login / logout / me / change-password
-│   │   │   │   └── SystemController.php   org settings / feature flags / policy
-│   │   │   ├── Middleware/
-│   │   │   │   └── EnsureRole.php
-│   │   │   └── Resources/
-│   │   │       └── UserResource.php
-│   │   └── Models/                        Eloquent models
-│   ├── bootstrap/app.php                  Laravel 11 bootstrap
-│   ├── config/cors.php
-│   ├── database/
-│   │   ├── migrations/                    All 33 tables in order
-│   │   └── seeders/DatabaseSeeder.php
-│   └── routes/api.php
-│
-├── frontend/                React 18 + Vite + TypeScript + Tailwind
-│   └── src/
-│       ├── components/
-│       │   ├── guards/ProtectedRoute.tsx
-│       │   └── layout/
-│       │       ├── AppShell.tsx           Sidebar + TopBar wrapper
-│       │       ├── Sidebar.tsx            Role-filtered navigation
-│       │       └── TopBar.tsx             User menu + logout
-│       ├── lib/
-│       │   ├── axios.ts                   Axios with auth header
-│       │   └── queryClient.ts
-│       ├── pages/
-│       │   ├── LoginPage.tsx              Fetches org branding before render
-│       │   └── DashboardPage.tsx          Role-aware stat cards
-│       ├── stores/authStore.ts            Zustand (token in sessionStorage)
-│       ├── types/
-│       │   ├── auth.ts
-│       │   └── organization.ts
-│       └── router.tsx
-│
-├── docker/
-│   ├── nginx.conf                         Port 8080, SPA + API proxy
-│   ├── entrypoint.sh                      Secrets, migrate, start
-│   └── postgres-init.sql                  rrp_readonly role
-│
-├── Dockerfile                             Multi-stage: node → composer → ubuntu
-├── docker-compose.yml                     app + worker + postgres + redis
-├── setup.sh                               First-time VM setup script
-└── deploy-vm.sh                           rsync + remote rebuild script
-```
-
----
-
-## API Routes (Phase 1)
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | /api/auth/login | — | Login, returns token |
-| POST | /api/auth/logout | ✓ | Revoke current token |
-| GET | /api/auth/me | ✓ | Current user |
-| POST | /api/auth/change-password | ✓ | Change password |
-| GET | /api/system/public | — | Org branding for login page |
-| GET | /api/system/organization | ✓ Admin | Org settings |
-| PATCH | /api/system/organization | ✓ Admin | Update org settings |
-| POST | /api/system/organization/logo | ✓ Admin | Upload logo |
-| GET | /api/system/feature-flags | ✓ Admin | All flags |
-| PATCH | /api/system/feature-flags | ✓ Admin | Update flags |
-| GET | /api/system/password-policy | ✓ Admin | Password policy |
-| PATCH | /api/system/password-policy | ✓ Admin | Update policy |
-
-
-
-# CityU Research Review Portal — v2
-
-A standalone Laravel 11 + React 18 replacement for the WordPress-based v1 research submission portal.
-
----
-
-## Quick Start (Docker)
-
-```bash
-# 1. Clone and enter the v2 directory
-git clone <repo-url> rrp && cd rrp/v2
-
-# 2. Copy the backend env file and fill in secrets
-cp backend/.env.example backend/.env
-# Edit DB_PASSWORD, APP_KEY (see next step), MAIL_* etc.
-
-# 3. Start everything — app, worker, postgres, redis
-docker compose up -d
-docker exec rrp_app php artisan key:generate --force
-docker exec rrp_app php artisan migrate --seed
-docker exec rrp_app php artisan storage:link
-
-# 4. Open the portal
-open http://localhost/app
-```
-
-Default seeded credentials:
+Created automatically when `db:seed` runs. **Change all passwords before going live.**
 
 | Role | Email | Password |
-|------|-------|----------|
-| Admin | admin@cityu.edu | admin12345 |
-| Reviewer | reviewer@cityu.edu | reviewer123 |
-| Researcher | researcher@cityu.edu | researcher123 |
-
----
-
-## Production Deployment (Azure VM)
-
-### First-time setup
-
-```bash
-# On the VM — install Docker Compose, copy files, start stack
-sudo apt-get install -y docker.io docker-compose-v2
-sudo mkdir -p /opt/rrp-v2
-sudo chown azureadmin:azureadmin /opt/rrp-v2
-
-# Copy docker-compose.yml + deploy/ scripts to VM
-scp -r v2/docker-compose.yml v2/Dockerfile v2/docker/ v2/deploy/ \
-    azureadmin@172.206.114.248:/opt/rrp-v2/
-
-# Copy backend/.env.production to /opt/rrp-v2/backend/.env
-scp backend/.env.production azureadmin@172.206.114.248:/opt/rrp-v2/backend/.env
-
-# Start containers
-ssh azureadmin@172.206.114.248 'cd /opt/rrp-v2 && docker compose up -d'
-```
-
-### SSL / HTTPS
-
-```bash
-# On the VM — installs certbot, issues cert, installs nginx vhost
-sudo bash /opt/rrp-v2/deploy/ssl-setup.sh portal.cityu.edu admin@cityu.edu
-```
-
-The script:
-1. Installs certbot and host-level nginx
-2. Issues a Let's Encrypt certificate
-3. Installs `deploy/nginx-vhost.conf` as an SSL-terminating reverse proxy in front of the Docker container
-4. Schedules daily auto-renewal
-
-### Process supervision (optional)
-
-```bash
-# Keep the Docker stack auto-restarting on crash
-sudo apt-get install -y supervisor
-sudo cp /opt/rrp-v2/deploy/supervisord.conf /etc/supervisor/conf.d/rrp-v2.conf
-sudo cp /opt/rrp-v2/deploy/watchdog.sh /opt/rrp-v2/deploy/watchdog.sh
-sudo chmod +x /opt/rrp-v2/deploy/watchdog.sh
-sudo supervisorctl reread && sudo supervisorctl update
-```
-
-### Incremental deploys (from Windows dev machine)
-
-```bash
-wsl bash /mnt/d/Development/CityU-Research-Tracker/check_routes.sh
-```
-
-This SCPs changed PHP files, docker-cp them into the running container, runs migrations, rebuilds the React SPA inside a Node container, and reloads nginx — all in one step.
-
----
-
-## Environment Variables
-
-Create `backend/.env` (copy from `backend/.env.example`):
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `APP_KEY` | ✅ | Run `php artisan key:generate` |
-| `APP_URL` | ✅ | Public URL, e.g. `https://portal.cityu.edu` |
-| `DB_HOST` | ✅ | Postgres host (`postgres` inside Docker) |
-| `DB_DATABASE` | ✅ | Database name |
-| `DB_USERNAME` | ✅ | Postgres user |
-| `DB_PASSWORD` | ✅ | Postgres password |
-| `REDIS_HOST` | ✅ | Redis host (`redis` inside Docker) |
-| `MAIL_HOST` | | SMTP host for email notifications |
-| `MAIL_PORT` | | SMTP port (587) |
-| `MAIL_USERNAME` | | SMTP username |
-| `MAIL_PASSWORD` | | SMTP password |
-| `MAIL_FROM_ADDRESS` | | Sender address |
-| `SANCTUM_STATEFUL_DOMAINS` | ✅ | Frontend domain for Sanctum cookie auth |
-| `APP_DEBUG` | | `false` in production |
-| `LOG_LEVEL` | | `error` in production |
-
----
-
-## Running Tests
-
-### Backend (PHPUnit — SQLite in-memory, no Postgres needed)
-
-```bash
-cd backend
-composer install
-php artisan test
-# or in parallel:
-php artisan test --parallel
-```
-
-### Frontend (Vitest + React Testing Library)
-
-```bash
-cd frontend
-npm install
-npm run test          # run once
-npm run test:watch    # watch mode
-```
-
-### TypeScript type check + production build
-
-```bash
-cd frontend
-npx tsc --noEmit
-npm run build
-```
-
----
-
-## CI/CD (GitHub Actions)
-
-`.github/workflows/ci.yml` runs on every push/PR to `main` or `develop`:
-
-1. **backend** job — PHPUnit with SQLite, PHP 8.4
-2. **frontend** job — `tsc --noEmit`, Vitest, `vite build`; uploads `dist/` artifact
-3. **deploy** job — runs only on `main` push; SSHes to the VM and syncs files
-
-Required GitHub secrets for the deploy job:
-
-| Secret | Value |
-|--------|-------|
-| `VM_HOST` | `172.206.114.248` |
-| `VM_USER` | `azureadmin` |
-| `VM_PASS` | VM SSH password |
-
----
-
-## v1 → v2 Migration
-
-```bash
-# Dry run first — shows what would be imported
-docker exec -w /var/www/html rrp_app \
-    php scripts/migrate_v1_data.php --dry-run --v1-data=/path/to/v1/data
-
-# Full migration
-docker exec -w /var/www/html rrp_app \
-    php scripts/migrate_v1_data.php --v1-data=/path/to/v1/data
-```
-
-The migration imports v1 users, submissions (with status mapping), and file attachments. See [`backend/scripts/migrate_v1_data.php`](backend/scripts/migrate_v1_data.php) for all options.
-
-**v1 read-only mode:** In the v2 Admin → Settings, toggle "v1 Read-Only Mode" to freeze the WordPress portal and direct researchers to v2 before cutting over entirely.
-
----
-
-## Architecture
-
-```
-Browser
-  └── HTTPS → Nginx (host, port 443) — deploy/nginx-vhost.conf
-        └── HTTP proxy → Docker rrp_app (port 80 → internal 8080)
-              ├── /app/      React SPA   (static, /var/www/frontend/)
-              ├── /api/      Laravel API (PHP-FPM, port 9000)
-              └── /sanctum/  Sanctum auth endpoints
-
-docker-compose services:
-  rrp_app     — PHP-FPM + nginx (serves both SPA and API)
-  rrp_worker  — php artisan queue:work redis (email, notifications)
-  postgres    — PostgreSQL 16
-  redis       — Redis 7
-```
-
----
-
-## Directory Structure
-
-```
-v2/
-├── backend/          Laravel 11 application
-│   ├── app/          Models, Controllers, Services, Jobs, Policies
-│   ├── database/     Migrations, seeders
-│   ├── routes/       api.php
-│   ├── tests/        PHPUnit Feature + Unit tests
-│   └── scripts/      migrate_v1_data.php
-├── frontend/         React 18 + TypeScript SPA
-│   ├── src/          Components, pages, hooks, stores
-│   └── src/test/     Vitest tests
-├── docker/           nginx.conf, entrypoint.sh (inside container)
-├── deploy/           Production infrastructure scripts
-│   ├── nginx-vhost.conf    External SSL reverse proxy
-│   ├── supervisord.conf    Process supervision
-│   ├── watchdog.sh         Health watchdog
-│   └── ssl-setup.sh        Let's Encrypt certificate setup
-├── .github/workflows/ci.yml
-├── docker-compose.yml
-├── Dockerfile
-└── spec/             Original design specifications
-```
-
----
-
-## Smoke Testing
-
-After each deployment, run through [deploy/smoke-test-checklist.md](deploy/smoke-test-checklist.md).
-
----
-
-## Why a Rewrite from v1?
-
-| Problem in v1 | v2 Solution |
-|---|---|
-| Workflow logic in 7 000-line PHP file | Config-driven Workflow Engine |
-| Status derived by string-scanning → bugs | Explicit state machine, stored status |
-| Decisions overwritten on revision — no history | Immutable `review_decisions` table |
-| No background jobs — escalation impossible | Laravel Queues + Redis |
-| WordPress plugin — WP-specific auth/ORM | Standalone Laravel app |
-| No type safety in 4 000-line portal.js | React 18 + TypeScript |
-| JSON file persistence | PostgreSQL with migrations |
-| PostgreSQL 16 | Full relational integrity, JSONB for flexible config, proper constraints |
-| Redis 7 | Queue driver + cache; required for escalation background jobs |
-| Laravel Reverb | WebSocket server (first-party, no Pusher dependency) for real-time notifications |
-| Laravel Scout + Meilisearch | Full-text search across submissions (optional phase 7) |
-
-### Frontend — React 18 + TypeScript
-
-| Choice | Rationale |
-|---|---|
-| React 18 + TypeScript | Type safety eliminates whole class of v1 JS bugs |
-| Vite 5 | Fast HMR dev server, optimal production bundles |
-| Tailwind CSS 3 | Utility-first, consistent design tokens |
-| shadcn/ui | Accessible, unstyled component primitives (Radix UI underneath) |
-| React Query (TanStack) | Server-state management, automatic cache invalidation |
-| React Hook Form + Zod | Type-safe forms with schema validation |
-| Zustand | Minimal client-state store (auth, notifications) |
-| React Router 6 | SPA routing with role-based route guards |
-
-### Infrastructure
-
-| Component | Choice |
-|---|---|
-| Web server | Nginx (replaces Apache) |
-| Process manager | Supervisor (PHP-FPM + queue workers) |
-| Container | Docker + Docker Compose (dev) |
-| Deployment | Same Azure VM; separate vhost from v1 |
-| File storage | Local disk initially; Azure Blob Storage adapter ready |
-| Email | Laravel Mail + SMTP (existing ACS connector reused) |
-
----
-
-## Repository Layout (target)
-
-```
-v2/
-├── backend/                    # Laravel 11 application
-│   ├── app/
-│   │   ├── Enums/              # Status, Decision, ApprovalStrategy, etc.
-│   │   ├── Events/             # DecisionSubmitted, StageCompleted, etc.
-│   │   ├── Http/Controllers/   # Thin — delegate to Services
-│   │   ├── Http/Resources/     # API response transformers (visibility applied here)
-│   │   ├── Jobs/               # EscalationCheckJob, NotificationJob
-│   │   ├── Models/             # Eloquent models
-│   │   ├── Policies/           # Authorization (submitter/reviewer/admin)
-│   │   ├── Services/
-│   │   │   ├── WorkflowEngine.php
-│   │   │   ├── StageEvaluator.php
-│   │   │   ├── GatedReleaseService.php
-│   │   │   ├── VisibilityService.php
-│   │   │   └── NotificationService.php
-│   │   └── Rules/              # Custom validation rules
-│   ├── database/
-│   │   ├── migrations/
-│   │   └── seeders/
-│   └── tests/
-│       ├── Feature/            # HTTP-level tests
-│       └── Unit/               # Service unit tests
-│
-├── frontend/                   # React 18 + TypeScript SPA
-│   ├── src/
-│   │   ├── api/                # React Query hooks, axios client
-│   │   ├── components/         # Shared UI components
-│   │   │   ├── workflow/       # StageTimeline, DecisionBadge, etc.
-│   │   │   └── ui/             # shadcn/ui wrappers
-│   │   ├── pages/              # Route-level page components
-│   │   │   ├── student/
-│   │   │   ├── reviewer/
-│   │   │   ├── chair/
-│   │   │   └── admin/
-│   │   ├── store/              # Zustand stores
-│   │   └── types/              # TypeScript types mirroring backend models
-│   └── vite.config.ts
-│
-├── spec/                       # This folder — all specification documents
-│   ├── 01-architecture.md
-│   ├── 02-data-model.md
-│   ├── 03-workflow-engine.md
-│   ├── 04-api-spec.md
-│   ├── 05-ui-spec.md
-│   ├── 06-implementation-plan.md
-│   └── 07-system-config.md
-│
-└── README.md                   # This file
-```
-
----
-
-## Spec Documents
-
-| Document | Contents |
-|---|---|
-| [01-architecture.md](spec/01-architecture.md) | System diagram, component boundaries, deployment topology |
-| [02-data-model.md](spec/02-data-model.md) | Full PostgreSQL schema — all tables, constraints, security & encryption |
-| [03-workflow-engine.md](spec/03-workflow-engine.md) | State machine, stage evaluation, dynamic workflow, gated release |
-| [04-api-spec.md](spec/04-api-spec.md) | All REST endpoints + system config endpoints |
-| [05-ui-spec.md](spec/05-ui-spec.md) | All screens per role, system config UI, workflow builder, design tokens |
-| [06-implementation-plan.md](spec/06-implementation-plan.md) | 9 phases (incl. Phase 1b: system config) with tasks and acceptance criteria |
-| [07-system-config.md](spec/07-system-config.md) | SSO (SAML2/OIDC), email, encryption algorithms, password policy, backup |
-
----
-
-## Decision Log
-
-| # | Decision | Rationale |
 |---|---|---|
-| D1 | Stay PHP (Laravel) not Node | Team knows PHP; same deployment VM; Laravel queue system is production-grade |
-| D2 | PostgreSQL not MySQL | JSONB column for stage visibility config; better constraint support |
-| D3 | Standalone app, not WordPress plugin | Eliminate WP coupling; proper ORM; testable; deployable independently |
-| D4 | WordPress user import at migration | Existing users imported via migration script; new auth handled by Laravel Sanctum |
-| D5 | React SPA not SSR | All role-specific rendering is client-side; SSR adds complexity with no SEO benefit |
-| D6 | `review_decisions` is append-only / immutable | Compliance requirement; audit trail; version isolation |
-| D7 | Stage role labels are free text, not an enum | Admin configures any label ('Chair', 'IRB Officer', 'External Examiner') per stage; `is_gatekeeper` flag identifies the release-issuing stage |
-| D8 | Only 4 global roles: admin, coordinator, reviewer, student | Stage-level labels don't create new role types; authorization is via `stage_assignments` table |
-| D9 | `GatedRelease` is a separate first-class entity | Gatekeeper vote ≠ student-visible decision; two distinct actions |
-| D10 | Visibility rules declared in `StageDefinition` | Eliminates ad-hoc stripping code; single source of truth |
-| D11 | `FULL_RESTART` default for gated, `FAILED_STAGE_RESTART` for non-gated | Matches academic workflow expectations |
-| D12 | All system config stored in DB, not `.env` | Only `APP_KEY` and DB credentials live in `.env`; everything else is admin-configurable at runtime |
-| D13 | SSO coexists with local auth | `disable_local_auth` feature flag forces SSO-only when needed |
-| D14 | Sensitive config encrypted with `APP_KEY` | SMTP passwords, SSO secrets stored as AES-256-CBC ciphertext via `Crypt::encryptString()` |
-| D15 | Decision options configurable per stage | Not hardcoded APPROVE/REJECT; each stage defines its own labels mapped to outcomes (APPROVED/REVISION/REJECTED) |
+| Administrator | `admin@cityu.edu` | `admin12345` |
+| Coordinator | `coordinator@cityu.edu` | `admin12345` |
+| Reviewer | `reviewer@cityu.edu` | `admin12345` |
+| Student | `student@cityu.edu` | `admin12345` |
+
+---
+
+## 7. Project Structure
+
+```
+CityU-Research-Tracker/
+├── backend/                    Laravel 10 API
+│   ├── app/
+│   │   ├── Http/
+│   │   │   ├── Controllers/    Route controllers
+│   │   │   ├── Middleware/     EnsureRole, etc.
+│   │   │   └── Resources/      API resource transformers
+│   │   └── Models/             Eloquent models
+│   ├── database/
+│   │   ├── migrations/         Database schema (all tables)
+│   │   └── seeders/            DatabaseSeeder — demo accounts
+│   ├── routes/api.php          All API routes
+│   └── .env.example            Environment template
+│
+├── frontend/                   React 18 + Vite + TypeScript + Tailwind CSS
+│   └── src/
+│       ├── components/         Shared UI (guards, layout shell)
+│       ├── lib/                Axios client, React Query setup
+│       ├── pages/              Route-level page components
+│       ├── stores/             Zustand state (auth, etc.)
+│       ├── types/              TypeScript interfaces
+│       └── router.tsx          React Router configuration
+│
+├── docker/
+│   ├── nginx.conf              Internal Nginx config (port 8080, SPA + API)
+│   ├── entrypoint.sh           Container startup (secrets, migrate, FPM+Nginx)
+│   └── postgres-init.sql       rrp_readonly role setup
+│
+├── deploy/
+│   ├── quick-start-docker.sh   One-command Docker deployment
+│   ├── install.sh              Bare-metal Ubuntu installer
+│   ├── install-remote.sh       Remote VM deployment via SSH
+│   ├── ssl-setup.sh            Let's Encrypt certificate provisioning
+│   ├── update.sh               Rolling update (code + migrations)
+│   ├── rollback.sh             Restore from backup
+│   ├── backup.sh               Database + file backup
+│   ├── nginx-vhost.conf        Host-level Nginx reverse proxy template
+│   ├── supervisord.conf        Supervisor config for Docker stack management
+│   ├── watchdog.sh             Health-check watchdog
+│   └── smoke-test-checklist.md Post-deployment verification steps
+│
+├── Dockerfile                  Multi-stage: Node 22 → Composer 2 → Ubuntu 24.04
+├── docker-compose.yml          app + worker + postgres + redis
+├── DEPLOYMENT.md               Full deployment guide (all scenarios)
+├── OPERATIONS-MANUAL.md        Sysadmin reference (monitoring, backups, etc.)
+└── README.md                   Project overview
+```
+
+---
+
+## 8. API Reference (Phase 1)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/auth/login` | — | Login, returns Sanctum token |
+| POST | `/api/auth/logout` | ✓ | Revoke current token |
+| GET | `/api/auth/me` | ✓ | Current authenticated user |
+| POST | `/api/auth/change-password` | ✓ | Change own password |
+| GET | `/api/system/public` | — | Org branding for the login page |
+| GET | `/api/system/organization` | ✓ Admin | Organisation settings |
+| PATCH | `/api/system/organization` | ✓ Admin | Update organisation settings |
+| POST | `/api/system/organization/logo` | ✓ Admin | Upload organisation logo |
+| GET | `/api/system/feature-flags` | ✓ Admin | All feature flags |
+| PATCH | `/api/system/feature-flags` | ✓ Admin | Update feature flags |
+| GET | `/api/system/password-policy` | ✓ Admin | Current password policy |
+| PATCH | `/api/system/password-policy` | ✓ Admin | Update password policy |

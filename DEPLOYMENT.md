@@ -24,7 +24,7 @@ sudo bash deploy/quick-start-docker.sh --domain portal.myorg.com --https --no-se
 sudo bash deploy/install.sh --domain portal.myorg.com --email admin@myorg.com
 
 # Remote cloud VM from your local machine (any provider)
-export VM_HOST=1.2.3.4  VM_USER=ubuntu  SSH_KEY=~/.ssh/id_rsa
+export VM_HOST=YOUR_VM_IP  VM_USER=ubuntu  SSH_KEY=~/.ssh/id_rsa
 bash deploy/install-remote.sh --domain portal.myorg.com --email admin@myorg.com
 ```
 
@@ -119,7 +119,7 @@ Use `deploy/quick-start-docker.sh` -- it handles everything: generates `.env`, b
 
 ```bash
 git clone https://github.com/cityuseattle/CityU-Research-Tracker.git
-cd research-review-portal
+cd CityU-Research-Tracker
 ```
 
 ### Step 2 -- Run the quick-start script
@@ -202,7 +202,7 @@ Run the installer directly on the server. No Docker required -- installs PHP 8.4
 
 ```bash
 # Clone the repo onto the server
-git clone https://github.com/your-org/research-review-portal.git /opt/rrp
+git clone https://github.com/cityuseattle/CityU-Research-Tracker.git /opt/rrp
 cd /opt/rrp
 
 # Run the installer (requires root)
@@ -250,11 +250,11 @@ Deploy to any cloud provider (Azure, AWS, GCP, DigitalOcean, Hetzner, etc.) from
 
 ```bash
 # Clone the repo locally first
-git clone https://github.com/your-org/research-review-portal.git
-cd research-review-portal
+git clone https://github.com/cityuseattle/CityU-Research-Tracker.git
+cd CityU-Research-Tracker
 
 # Set connection details
-export VM_HOST=1.2.3.4        # VM public IP or hostname
+export VM_HOST=YOUR_VM_IP        # VM public IP or hostname
 export VM_USER=ubuntu          # SSH username (ubuntu, azureadmin, ec2-user, etc.)
 export SSH_KEY=~/.ssh/id_rsa   # Path to your private key
 # Or use a password instead:
@@ -294,15 +294,15 @@ bash deploy/install-remote.sh \
 
 **Azure VM:**
 ```bash
-export VM_HOST=172.206.114.248
-export VM_USER=azureadmin
+export VM_HOST=YOUR_VM_IP          # e.g. the Public IP from the Azure portal
+export VM_USER=azureadmin          # default Azure VM username
 export SSH_KEY=~/.ssh/azure_rsa
 bash deploy/install-remote.sh --domain portal.myorg.com --email admin@myorg.com
 ```
 
 **AWS EC2:**
 ```bash
-export VM_HOST=ec2-1-2-3-4.compute-1.amazonaws.com
+export VM_HOST=YOUR_EC2_PUBLIC_DNS  # e.g. ec2-xx-xx-xx-xx.compute-1.amazonaws.com
 export VM_USER=ec2-user
 export SSH_KEY=~/.ssh/my-ec2-key.pem
 bash deploy/install-remote.sh --domain portal.myorg.com --email admin@myorg.com
@@ -310,7 +310,7 @@ bash deploy/install-remote.sh --domain portal.myorg.com --email admin@myorg.com
 
 **DigitalOcean / Hetzner / any Ubuntu VPS:**
 ```bash
-export VM_HOST=1.2.3.4
+export VM_HOST=YOUR_VM_IP
 export VM_USER=root
 export SSH_KEY=~/.ssh/id_rsa
 bash deploy/install-remote.sh --domain portal.myorg.com --email admin@myorg.com
@@ -325,8 +325,8 @@ bash deploy/install-remote.sh --domain portal.myorg.com --email admin@myorg.com
 Run the portal on `localhost` with no domain or SSL required.
 
 ```bash
-git clone https://github.com/your-org/research-review-portal.git
-cd research-review-portal
+git clone https://github.com/cityuseattle/CityU-Research-Tracker.git
+cd CityU-Research-Tracker
 
 # Start on http://localhost:8080
 bash deploy/quick-start-docker.sh --port 8080
@@ -527,7 +527,7 @@ Log in as `admin@cityu.edu` and complete these steps before opening the portal t
 ### Manual deploy trigger
 
 ```bash
-VM_HOST=1.2.3.4 VM_USER=ubuntu SSH_KEY=~/.ssh/id_rsa \
+VM_HOST=YOUR_VM_IP VM_USER=ubuntu SSH_KEY=~/.ssh/id_rsa \
   bash deploy/update.sh
 ```
 
@@ -539,16 +539,16 @@ Use `deploy/update.sh` to push code changes without rebuilding the entire image.
 
 ```bash
 # Standard update (backend + frontend + migrations)
-VM_HOST=1.2.3.4 VM_USER=ubuntu bash deploy/update.sh
+VM_HOST=YOUR_VM_IP VM_USER=ubuntu bash deploy/update.sh
 
 # Backend only
-VM_HOST=1.2.3.4 VM_USER=ubuntu bash deploy/update.sh --backend-only
+VM_HOST=YOUR_VM_IP VM_USER=ubuntu bash deploy/update.sh --backend-only
 
 # Frontend only (no migrations)
-VM_HOST=1.2.3.4 VM_USER=ubuntu bash deploy/update.sh --frontend-only
+VM_HOST=YOUR_VM_IP VM_USER=ubuntu bash deploy/update.sh --frontend-only
 
 # Zero-downtime blue-green swap
-VM_HOST=1.2.3.4 VM_USER=ubuntu bash deploy/update.sh --zero-downtime
+VM_HOST=YOUR_VM_IP VM_USER=ubuntu bash deploy/update.sh --zero-downtime
 ```
 
 ### What the update does
