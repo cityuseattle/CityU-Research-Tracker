@@ -36,6 +36,23 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# ── Pre-flight: Docker must NOT be bound to port 80 ──────────────────────────
+# certbot's ACME challenge needs host nginx on port 80. If the Docker container
+# is still bound to port 80 this script cannot install host nginx on that port.
+# Fix: set HOST_PORT=8080 in .env and run 'docker compose up -d' first.
+if ss -tlnp 2>/dev/null | grep -q ':80 ' || netstat -tlnp 2>/dev/null | grep -q ':80 '; then
+    OWNER=$(ss -tlnp 2>/dev/null | grep ':80 ' | grep -o 'users:.*' | head -1 || true)
+    if echo "$OWNER" | grep -qi docker; then
+        echo "ERROR: Docker container is already bound to port 80."
+        echo "       Host nginx needs port 80 for the ACME challenge."
+        echo ""
+        echo "  Fix: edit .env → set HOST_PORT=8080"
+        echo "       then run: docker compose up -d"
+        echo "       then re-run this script."
+        exit 1
+    fi
+fi
+
 echo "==> Domain   : $DOMAIN"
 echo "==> Email    : $EMAIL"
 echo "==> Webroot  : $WEBROOT"

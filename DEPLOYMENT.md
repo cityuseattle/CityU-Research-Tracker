@@ -432,25 +432,58 @@ docker exec rrp_app php artisan config:cache
 
 ## 8. SSL / HTTPS
 
+> **Optional step.** HTTP works without this. Follow these steps when you are ready to enable HTTPS and disable plain HTTP.
+
 ### Automatic (Let's Encrypt) -- recommended
 
-Pass `--https` to the quick-start script:
+#### Prerequisites
+
+Before running `ssl-setup.sh` the Docker container **must not** be bound to port 80.
+Host nginx needs port 80 to complete the ACME challenge.
+
+**Step 1 — Move Docker off port 80 (skip if already on 8080)**
+
+```bash
+# On the server, inside the repo directory:
+cd ~/CityU-Research-Tracker
+
+# Set HOST_PORT=8080 in .env (adds the line if absent, updates it if present)
+grep -q '^HOST_PORT=' .env && sed -i 's/^HOST_PORT=.*/HOST_PORT=8080/' .env || echo 'HOST_PORT=8080' >> .env
+
+# Update APP_URL to https (replace portal.myorg.com with your actual domain)
+sed -i 's|^APP_URL=.*|APP_URL=https://portal.myorg.com|' .env
+sed -i 's/^SESSION_DOMAIN=.*/SESSION_DOMAIN=portal.myorg.com/' .env
+sed -i 's/^SANCTUM_STATEFUL_DOMAINS=.*/SANCTUM_STATEFUL_DOMAINS=portal.myorg.com/' .env
+
+# Restart container on new port
+docker compose up -d
+```
+
+**Step 2 — Obtain certificate and configure host nginx**
+
+```bash
+sudo bash deploy/ssl-setup.sh portal.myorg.com admin@myorg.com 8080
+```
+
+Replace `portal.myorg.com` with your actual domain and `admin@myorg.com` with your email.
+
+Pass `--https` to the quick-start script for a fresh install that does everything in one go:
 
 ```bash
 export ADMIN_EMAIL=admin@myorg.com
 sudo bash deploy/quick-start-docker.sh --domain portal.myorg.com --https --no-seed
 ```
 
-Or, if the stack is already running, run the SSL script separately:
-
-```bash
-sudo bash deploy/ssl-setup.sh portal.myorg.com admin@myorg.com
-```
-
 **Requirements:**
-- Domain A record must point to this server's IP
-- Port 80 open for the ACME challenge
+- Domain A/CNAME record must point to this server's public IP
+- Port 80 **and** 443 open in firewall/NSG for the ACME challenge and HTTPS traffic
+- Docker container on port 8080 (not 80) before running `ssl-setup.sh`
 - Must run as root (sudo)
+
+**Common failure — ACME connection timeout:**
+If certbot reports `Timeout during connect (likely firewall problem)` it means either:
+1. Docker is still on port 80 — complete Step 1 above first
+2. Port 80 is blocked in the cloud firewall/NSG — open it for inbound traffic
 
 ### Manual renewal
 
