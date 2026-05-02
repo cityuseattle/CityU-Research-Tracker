@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 
 namespace Database\Seeders;
 
@@ -11,7 +11,7 @@ class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        // ── Organization settings ────────────────────────────────────────────
+        // â”€â”€ Organization settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         DB::table('organization_settings')->insertOrIgnore([[
             'id'             => 1,
             'org_name'       => 'City University Research Review Portal',
@@ -25,7 +25,7 @@ class DatabaseSeeder extends Seeder
             'updated_at'     => now(),
         ]]);
 
-        // ── Email settings (log driver for dev) ──────────────────────────────
+        // â”€â”€ Email settings (log driver for dev) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         DB::table('email_settings')->insertOrIgnore([[
             'id'           => 1,
             'driver'       => 'log',
@@ -35,7 +35,7 @@ class DatabaseSeeder extends Seeder
             'updated_at'   => now(),
         ]]);
 
-        // ── Password policy ──────────────────────────────────────────────────
+        // â”€â”€ Password policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         DB::table('password_policy')->insertOrIgnore([[
             'id'                       => 1,
             'min_length'               => 12,
@@ -50,7 +50,7 @@ class DatabaseSeeder extends Seeder
             'require_2fa'              => false,
         ]]);
 
-        // ── Feature flags ────────────────────────────────────────────────────
+        // â”€â”€ Feature flags â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         $flags = [
             ['key' => 'sso_enabled',             'value' => false, 'description' => 'Enable SSO login button'],
             ['key' => 'public_registration',      'value' => false, 'description' => 'Allow self-registration'],
@@ -70,7 +70,7 @@ class DatabaseSeeder extends Seeder
             );
         }
 
-        // ── Notification templates ────────────────────────────────────────────
+        // â”€â”€ Notification templates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         $templates = [
             [
                 'event_type' => 'SUBMISSION_RECEIVED',
@@ -128,7 +128,7 @@ class DatabaseSeeder extends Seeder
             );
         }
 
-        // ── Stage templates ───────────────────────────────────────────────────
+        // â”€â”€ Stage templates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         $stageTemplates = [
             [
                 'name'              => 'Single Blind Peer Review',
@@ -192,174 +192,7 @@ class DatabaseSeeder extends Seeder
                 ])
             );
         }
-
-        // ── Groups ────────────────────────────────────────────────────────────
-        $facultyId = (string) Str::uuid();
-        $deptId    = (string) Str::uuid();
-
-        DB::table('groups')->insertOrIgnore([
-            [
-                'id'        => $facultyId,
-                'name'      => 'Faculty of Science',
-                'slug'      => 'faculty-of-science',
-                'type'      => 'faculty',
-                'parent_id' => null,
-                'is_active' => true,
-                'created_at'=> now(),
-                'updated_at'=> now(),
-            ],
-            [
-                'id'        => $deptId,
-                'name'      => 'Department of Computer Science',
-                'slug'      => 'dept-cs',
-                'type'      => 'department',
-                'parent_id' => $facultyId,
-                'is_active' => true,
-                'created_at'=> now(),
-                'updated_at'=> now(),
-            ],
-        ]);
-
-        // ── Users ─────────────────────────────────────────────────────────────
-        $adminId      = (string) Str::uuid();
-        $coordId1     = (string) Str::uuid();
-        $coordId2     = (string) Str::uuid();
-        $reviewerId1  = (string) Str::uuid();
-        $reviewerId2  = (string) Str::uuid();
-        $reviewerId3  = (string) Str::uuid();
-        $studentId1   = (string) Str::uuid();
-        $studentId2   = (string) Str::uuid();
-        $studentId3   = (string) Str::uuid();
-
-        $usersToInsert = [
-            [
-                'id'            => $adminId,
-                'email'         => 'admin@cityu.edu',
-                'name'          => 'Portal Administrator',
-                'password_hash' => Hash::make('admin12345'),
-                'roles'         => json_encode(['admin']),
-                'is_active'     => true,
-            ],
-            [
-                'id'            => $coordId1,
-                'email'         => 'coordinator@cityu.edu',
-                'name'          => 'Alice Coordinator',
-                'password_hash' => Hash::make('admin12345'),
-                'roles'         => json_encode(['coordinator']),
-                'is_active'     => true,
-            ],
-            [
-                'id'            => $coordId2,
-                'email'         => 'coordinator2@cityu.edu',
-                'name'          => 'Bob Coordinator',
-                'password_hash' => Hash::make('admin12345'),
-                'roles'         => json_encode(['coordinator']),
-                'is_active'     => true,
-            ],
-            [
-                'id'            => $reviewerId1,
-                'email'         => 'reviewer@cityu.edu',
-                'name'          => 'Dr. Carol Reviewer',
-                'password_hash' => Hash::make('admin12345'),
-                'roles'         => json_encode(['reviewer']),
-                'is_active'     => true,
-            ],
-            [
-                'id'            => $reviewerId2,
-                'email'         => 'reviewer2@cityu.edu',
-                'name'          => 'Dr. Dave Reviewer',
-                'password_hash' => Hash::make('admin12345'),
-                'roles'         => json_encode(['reviewer']),
-                'is_active'     => true,
-            ],
-            [
-                'id'            => $reviewerId3,
-                'email'         => 'reviewer3@cityu.edu',
-                'name'          => 'Dr. Eve Reviewer',
-                'password_hash' => Hash::make('admin12345'),
-                'roles'         => json_encode(['reviewer']),
-                'is_active'     => true,
-            ],
-            [
-                'id'            => $studentId1,
-                'email'         => 'student@cityu.edu',
-                'name'          => 'Frank Student',
-                'password_hash' => Hash::make('admin12345'),
-                'roles'         => json_encode(['student']),
-                'is_active'     => true,
-            ],
-            [
-                'id'            => $studentId2,
-                'email'         => 'student2@cityu.edu',
-                'name'          => 'Grace Student',
-                'password_hash' => Hash::make('admin12345'),
-                'roles'         => json_encode(['student']),
-                'is_active'     => true,
-            ],
-            [
-                'id'            => $studentId3,
-                'email'         => 'student3@cityu.edu',
-                'name'          => 'Henry Student',
-                'password_hash' => Hash::make('admin12345'),
-                'roles'         => json_encode(['student']),
-                'is_active'     => true,
-            ],
-        ];
-
-        foreach ($usersToInsert as &$u) {
-            $u['created_at'] = now();
-            $u['updated_at'] = now();
-        }
-        unset($u);
-
-        DB::table('users')->insertOrIgnore($usersToInsert);
-
-        // ── Programs ──────────────────────────────────────────────────────────
-        $progId1 = (string) Str::uuid();
-        $progId2 = (string) Str::uuid();
-
-        DB::table('programs')->insertOrIgnore([
-            [
-                'id'                  => $progId1,
-                'name'                => 'MSc Computer Science',
-                'school'              => 'School of Science',
-                'program_director_id' => $coordId1,
-                'group_id'            => $deptId,
-                'is_active'           => true,
-                'created_at'          => now(),
-                'updated_at'          => now(),
-            ],
-            [
-                'id'                  => $progId2,
-                'name'                => 'PhD Computational Biology',
-                'school'              => 'School of Science',
-                'program_director_id' => $coordId2,
-                'group_id'            => $deptId,
-                'is_active'           => true,
-                'created_at'          => now(),
-                'updated_at'          => now(),
-            ],
-        ]);
-
-        // Assign students to programs
-        DB::table('users')
-            ->whereIn('id', [$studentId1, $studentId2])
-            ->update(['program_id' => $progId1]);
-        DB::table('users')
-            ->where('id', $studentId3)
-            ->update(['program_id' => $progId2]);
-
-        // ── User group memberships ─────────────────────────────────────────────
-        $groupMembers = [
-            ['user_id' => $coordId1,   'group_id' => $deptId, 'role' => 'coordinator'],
-            ['user_id' => $reviewerId1, 'group_id' => $deptId, 'role' => 'reviewer'],
-            ['user_id' => $reviewerId2, 'group_id' => $deptId, 'role' => 'reviewer'],
-        ];
-
-        foreach ($groupMembers as $member) {
-            DB::table('user_groups')->insertOrIgnore(
-                array_merge($member, ['joined_at' => now()])
-            );
-        }
+        // Users, programs, and groups are created via the admin UI after first login.
+        // The emergency admin account is provisioned automatically by User::syncEmergencyAdmin().
     }
 }

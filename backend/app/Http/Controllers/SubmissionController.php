@@ -981,7 +981,7 @@ class SubmissionController extends Controller
             Submission::STATUS_REJECTED,
         ]);
 
-        $stageData = $stages->map(function ($stage) use ($reviewers, $isActive, $isComplete, $showReviewers) {
+        $stageData = $stages->map(function ($stage) use ($reviewers, $isActive, $isComplete, $showReviewers, $submission) {
             $stageReviewers = $reviewers->where('stage_id', $stage->id);
             $total     = $stageReviewers->count();
             $completed = $stageReviewers->filter(fn($r) => $r->decision !== null)->count();
@@ -1018,10 +1018,16 @@ class SubmissionController extends Controller
                 ->min(fn($r) => $r->due_at)
                 ?->toDateString();
 
-            if ($stageDueAt === null && $stage->due_days && $stageReviewers->isNotEmpty()) {
-                $earliest = $stageReviewers->min(fn($r) => $r->assigned_at);
-                if ($earliest) {
-                    $stageDueAt = $earliest->copy()->addDays($stage->due_days)->toDateString();
+            if ($stageDueAt === null && $stage->due_days) {
+                // Prefer the recorded stage-entry timestamp for accuracy.
+                if ($stage->id === $submission->current_stage_id && $submission->current_stage_entered_at) {
+                    $stageDueAt = $submission->current_stage_entered_at->copy()->addDays($stage->due_days)->toDateString();
+                } elseif ($stageReviewers->isNotEmpty()) {
+                    // Legacy fallback for records predating this fix: use earliest assigned_at.
+                    $earliest = $stageReviewers->min(fn($r) => $r->assigned_at);
+                    if ($earliest) {
+                        $stageDueAt = $earliest->copy()->addDays($stage->due_days)->toDateString();
+                    }
                 }
             }
 

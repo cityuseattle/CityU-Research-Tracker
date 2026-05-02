@@ -80,9 +80,19 @@ class SubmissionReviewerController extends Controller
             ], 422);
         }
 
-        // Auto-calculate due_at from stage's due_days if not explicitly provided
+        // Auto-calculate due_at from the stage's start time, not today.
+        // If this is the currently-active stage, base the due date on when the submission
+        // entered that stage (current_stage_entered_at).
+        // If this is a future stage, leave due_at null — it will be populated when
+        // the stage activates (first reviewer accepts).
         $stage = StageDefinition::find($data['stage_id']);
-        $dueAt = $data['due_at'] ?? ($stage && $stage->due_days ? now()->addDays($stage->due_days)->toDateString() : null);
+        $dueAt = $data['due_at'] ?? null;
+        if ($dueAt === null && $stage && $stage->due_days) {
+            if ($submission->current_stage_id === $stage->id && $submission->current_stage_entered_at) {
+                $dueAt = $submission->current_stage_entered_at->copy()->addDays($stage->due_days)->toDateString();
+            }
+            // Future stage: leave null; populated when stage activates
+        }
 
         $reviewer = SubmissionReviewer::create([
             'id'            => Str::uuid()->toString(),
@@ -179,10 +189,21 @@ class SubmissionReviewerController extends Controller
                     ? (StageDefinition::find($submission->current_stage_id)?->order ?? -1)
                     : -1;
                 if ($stageObj->order > $currentStageOrder || $submission->current_stage_id === null) {
+                    $stageEnteredAt = now();
                     $submission->update([
                         'current_stage_id'         => $stageObj->id,
-                        'current_stage_entered_at' => now(),
+                        'current_stage_entered_at' => $stageEnteredAt,
                     ]);
+
+                    // Now that the stage is active, backfill due_at for any reviewers in
+                    // this stage that were assigned before the stage started (due_at = null).
+                    if ($stageObj->due_days) {
+                        $newDueDate = $stageEnteredAt->copy()->addDays($stageObj->due_days)->toDateString();
+                        SubmissionReviewer::where('submission_id', $submissionId)
+                            ->where('stage_id', $stageObj->id)
+                            ->whereNull('due_at')
+                            ->update(['due_at' => $newDueDate]);
+                    }
                 }
             }
         }
