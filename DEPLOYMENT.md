@@ -955,6 +955,13 @@ Use this when you want to run the full stack locally on your Windows machine.
 | WSL 2 enabled with Linux distro | Ubuntu 22.04/24.04 recommended |
 | Windows firewall + port forwarding (if external access needed) | Required only when accessing WSL services from other machines/subnets |
 
+Make sure you valid unix distribution. Below exmaple is assuming ubuntu24.04 distribution.
+You can install ubuntu-24.04 distribution using below command.
+
+```powershell
+wsl --install -d Ubuntu-24.04
+```
+
 #### Network prerequisite for WSL (external access only)
 
 If you run the stack in WSL and need access from outside the Windows host (for example from LAN, another VM, or cloud public IP), configure both:
@@ -999,10 +1006,6 @@ Notes:
 - If access is only from local Windows browser (`http://localhost` or `http://localhost:8080`), this step is usually not required.
 
 #### Quick steps
-
-```powershell
-wsl --install -d Ubuntu-24.04
-```
 
 Inside the Ubuntu shell:
 
