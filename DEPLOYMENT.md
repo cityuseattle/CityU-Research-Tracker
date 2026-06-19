@@ -962,14 +962,21 @@ If you run the stack in WSL and need access from outside the Windows host (for e
 1. Windows port forwarding via `netsh interface portproxy`
 2. Windows inbound firewall rules for the same ports
 
-Example (run in elevated PowerShell; replace IPs/ports for your host):
+First, get your current WSL IP from inside the WSL distro:
+
+```bash
+# Run inside WSL
+hostname -I
+```
+
+Then configure forwarding from elevated PowerShell on Windows:
 
 ```powershell
 # Forward host SSH port 2222 to WSL SSH service
-netsh interface portproxy add v4tov4 listenaddress=10.0.0.4 listenport=2222 connectaddress=172.24.247.153 connectport=22
+netsh interface portproxy add v4tov4 listenaddress=<windows_ip> listenport=2222 connectaddress=<wsl_ip> connectport=22
 
 # Forward host HTTPS 443 (to local listener on Windows/WSL)
-netsh interface portproxy add v4tov4 listenaddress=10.0.0.4 listenport=443 connectaddress=127.0.0.1 connectport=443
+netsh interface portproxy add v4tov4 listenaddress=<windows_ip> listenport=443 connectaddress=<wsl_ip> connectport=443
 
 # Show current forwarding rules
 netsh interface portproxy show all
@@ -982,6 +989,7 @@ New-NetFirewallRule -DisplayName "Allow Port 443"  -Direction Inbound -Protocol 
 Notes:
 
 - If your app is exposed on HTTP (`--port 8080`), add a matching `8080` portproxy + firewall rule instead of `443`.
+- You can get `<wsl_ip>` any time by running `hostname -I` inside the WSL machine.
 - WSL IPs are dynamic after reboot; update `connectaddress` when needed.
 - If access is only from local Windows browser (`http://localhost` or `http://localhost:8080`), this step is usually not required.
 
