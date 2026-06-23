@@ -2574,6 +2574,7 @@ function GatedReleasePanel({
       qc.invalidateQueries({ queryKey: ['submission', submissionId] })
       qc.invalidateQueries({ queryKey: ['submission-feedback', submissionId] })
       qc.invalidateQueries({ queryKey: ['my-reviews'] })
+      qc.invalidateQueries({ queryKey: ['my-reviews-queue'] })
       qc.invalidateQueries({ queryKey: ['gated-reviews'] })
       qc.invalidateQueries({ queryKey: ['dashboard-stats'] })
       toast.success('Feedback sent to submitter.', 'The submitter has been notified to revise and resubmit.')
@@ -2593,6 +2594,7 @@ function GatedReleasePanel({
       qc.invalidateQueries({ queryKey: ['submission', submissionId] })
       qc.invalidateQueries({ queryKey: ['submission-feedback', submissionId] })
       qc.invalidateQueries({ queryKey: ['my-reviews'] })
+      qc.invalidateQueries({ queryKey: ['my-reviews-queue'] })
       qc.invalidateQueries({ queryKey: ['gated-reviews'] })
       toast.success('Stage returned for re-review.', 'Reviewers have been notified to reconsider.')
     },
@@ -3261,6 +3263,7 @@ function ReviewerDecisionPanel({
       qc.invalidateQueries({ queryKey: ['submission-reviewers', submissionId] })
       qc.invalidateQueries({ queryKey: ['review-progress', submissionId] })
       qc.invalidateQueries({ queryKey: ['my-reviews'] })
+      qc.invalidateQueries({ queryKey: ['my-reviews-queue'] })
       qc.invalidateQueries({ queryKey: ['dashboard-stats'] })
       toast.success('Decision submitted.', 'Your review has been recorded.')
     },
@@ -3281,6 +3284,7 @@ function ReviewerDecisionPanel({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['submission-reviewers', submissionId] })
       qc.invalidateQueries({ queryKey: ['my-reviews'] })
+      qc.invalidateQueries({ queryKey: ['my-reviews-queue'] })
       toast.success('Extension requested', 'The coordinator will review your request.')
       setShowExtension(false)
       setExtReason('')
@@ -3297,6 +3301,7 @@ function ReviewerDecisionPanel({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['submission-reviewers', submissionId] })
       qc.invalidateQueries({ queryKey: ['my-reviews'] })
+      qc.invalidateQueries({ queryKey: ['my-reviews-queue'] })
       toast.success('Conflict declared', 'The coordinator has been notified to reassign a reviewer.')
       setShowConflict(false)
       setConflictReason('')

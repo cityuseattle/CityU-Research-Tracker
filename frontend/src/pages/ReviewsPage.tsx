@@ -71,6 +71,7 @@ interface ReviewAssignment {
     title: string
     status: SubmissionStatus
     current_version: number
+    current_stage?: { id: string; name: string } | null
     submission_type: { id: string; slug: string; label: string } | null
     submitter: { id: string; name: string; email: string }
     created_at: string
@@ -366,7 +367,9 @@ function AssignmentTableRow({
   maxExtensions: number
 }) {
   const sub = item.submission
-  const isAwaiting = classifyItem(item) === 'awaiting'
+  const isAwaiting = item.decision === null
+    && item.stage?.id === item.submission.current_stage?.id
+    && !TERMINAL_STATUSES.includes(item.submission.status)
 
   const dueDateEl = item.due_at ? (
     <span
@@ -417,6 +420,11 @@ function AssignmentTableRow({
       {/* Current Stage */}
       <td className="px-4 py-3 text-xs text-gray-600 whitespace-nowrap">
         {item.stage?.name ?? '—'}
+      </td>
+
+      {/* Submission Current Stage */}
+      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
+        {item.submission.current_stage?.name ?? '—'}
       </td>
 
       {/* Submission Date */}
@@ -517,6 +525,7 @@ function SectionTable({
               <th scope="col" className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-4 py-2.5">Title</th>
               <th scope="col" className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-4 py-2.5">Type</th>
               <th scope="col" className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-4 py-2.5">Your Stage</th>
+              <th scope="col" className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-4 py-2.5">Current Stage</th>
               <th scope="col" className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-4 py-2.5">Submitted</th>
               <th scope="col" className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-4 py-2.5">Prev. Decision Date</th>
               <th scope="col" className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-4 py-2.5">Prev. Decision</th>
@@ -558,6 +567,7 @@ function ExtensionModal({ item, onClose }: { item: ReviewAssignment; onClose: ()
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['my-reviews'] })
+      qc.invalidateQueries({ queryKey: ['my-reviews-queue'] })
       toast.success('Extension requested', 'The coordinator will be notified.')
       onClose()
     },
@@ -643,6 +653,7 @@ function ConflictModal({ item, onClose }: { item: ReviewAssignment; onClose: () 
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['my-reviews'] })
+      qc.invalidateQueries({ queryKey: ['my-reviews-queue'] })
       toast.success('Conflict flagged', 'The coordinator will be notified to reassign a reviewer.')
       onClose()
     },
@@ -746,16 +757,20 @@ export default function ReviewsPage() {
   const conflictDeclarations = coordData?.conflicts ?? []
   const incomingSubmissions = coordData?.unassigned ?? []
 
-  const { data, isLoading } = useQuery<{ pending: ReviewAssignment[], completed: ReviewAssignment[] }>({
+  const { data, isLoading } = useQuery<{ pending: ReviewAssignment[], future: ReviewAssignment[], completed: ReviewAssignment[] }>({
     queryKey: ['my-reviews', 'assignments'],
     queryFn: () => api.get('/submissions/my-reviews').then((r) => r.data),
     staleTime: 30_000,
   })
 
-  const items = [...(data?.pending ?? []), ...(data?.completed ?? [])]
+  const pending = data?.pending ?? []
+  const future = data?.future ?? []
+  const completed = data?.completed ?? []
 
-  const awaiting  = items.filter((i) => classifyItem(i) === 'awaiting')
-  const completed = items.filter((i) => classifyItem(i) === 'completed')
+  const items = [...pending, ...future, ...completed]
+
+  const awaiting  = pending.filter((i) => classifyItem(i) === 'awaiting')
+  const completedByMe = completed.filter((i) => classifyItem(i) === 'completed')
   const others    = items.filter((i) => classifyItem(i) === 'others')
 
   const awaitingSorted = [
@@ -894,13 +909,27 @@ export default function ReviewsPage() {
             />
           )}
 
-          {completed.length > 0 && (
+          {future.length > 0 && (
+            <SectionTable
+              title="Future Work (Assigned in Later Stages)"
+              count={future.length}
+              icon={Clock}
+              headerClass="bg-amber-50 text-amber-700"
+              items={future}
+              onExtension={setExtensionItem}
+              onConflict={setConflictItem}
+              navigate={navigate}
+              maxExtensions={maxExtensions}
+            />
+          )}
+
+          {completedByMe.length > 0 && (
             <SectionTable
               title="Reviewed by Me"
-              count={completed.length}
+              count={completedByMe.length}
               icon={CheckCircle2}
               headerClass="bg-green-50 text-green-700"
-              items={completed}
+              items={completedByMe}
               onExtension={setExtensionItem}
               onConflict={setConflictItem}
               navigate={navigate}

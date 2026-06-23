@@ -39,6 +39,7 @@ interface ReviewQueueItem {
 function ReviewerQueueView() {
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
+  const [activeTab, setActiveTab] = useState<'pending' | 'completed'>('pending')
 
   const { data, isLoading, isError, refetch } = useQuery<{ pending: ReviewQueueItem[], completed: ReviewQueueItem[] }>({
     queryKey: ['my-reviews-queue', 'submissions'],
@@ -60,6 +61,7 @@ function ReviewerQueueView() {
 
   const pendingFiltered = filterItems(pending)
   const completedFiltered = filterItems(completed)
+  const activeItems = activeTab === 'pending' ? pendingFiltered : completedFiltered
 
   return (
     <div>
@@ -92,167 +94,149 @@ function ReviewerQueueView() {
         </div>
       </div>
 
-      {/* Pending Reviews Section */}
-      <div className="mb-8">
-        <h2 className="text-lg font-semibold text-gray-900 mb-3">Awaiting My Review ({pending.length})</h2>
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          {isLoading ? (
-            <table className="w-full">
-              <tbody>
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <SkeletonRow key={i} cols={8} />
-                ))}
-              </tbody>
-            </table>
-          ) : isError ? (
-            <div className="flex flex-col items-center py-20 text-center">
-              <XCircle className="w-10 h-10 text-red-300 mb-3" />
-              <p className="text-gray-500">Failed to load review queue.</p>
-              <button onClick={() => refetch()} className="mt-3 text-blue-600 text-sm hover:underline">Retry</button>
-            </div>
-          ) : pendingFiltered.length === 0 ? (
-            <div className="flex flex-col items-center py-12 text-center">
-              <ShieldCheck className="w-10 h-10 text-gray-200 mb-3" />
-              <p className="text-sm font-medium text-gray-500">
-                {search ? 'No pending items match your search.' : 'No submissions awaiting your review.'}
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[880px]">
-                <thead>
-                  <tr className="border-b border-gray-100 bg-gray-50">
-                    <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Title</th>
-                    <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Type</th>
-                    <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Program</th>
-                    <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">My Stage</th>
-                    <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Stage Since</th>
-                    <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Ver.</th>
-                    <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Due</th>
-                    <th scope="col" className="px-4 py-3 w-8" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-50">
-                  {pendingFiltered.map((item) => (
-                    <tr
-                      key={item.assignment_id}
-                      className="hover:bg-gray-50 cursor-pointer"
-                      onClick={() => navigate(`/submissions/${item.submission.id}`)}
-                    >
-                      <td className="px-4 py-3">
-                        <p className="text-sm font-medium text-gray-900 truncate max-w-[240px]">
-                          {item.submission.title}
-                        </p>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
-                        {item.submission.submission_type?.label ?? '—'}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
-                        {item.submission.program?.name ?? '—'}
-                      </td>
-                      <td className="px-4 py-3 text-sm font-medium text-blue-700 whitespace-nowrap">
-                        {item.stage?.name ?? '—'}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">
-                        {item.submission.current_stage_entered_at
-                          ? new Date(item.submission.current_stage_entered_at).toLocaleDateString()
-                          : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-500">
-                        {item.submission.current_version > 0 ? `v${item.submission.current_version}` : '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        {item.due_at ? (
-                          <span className={`flex items-center gap-1 text-xs whitespace-nowrap ${
-                            item.is_overdue ? 'text-red-600 font-semibold' : item.is_due_soon ? 'text-amber-600 font-medium' : 'text-gray-500'
-                          }`}>
-                            {item.is_overdue ? <AlertTriangle size={11} /> : item.is_due_soon ? <Clock size={11} /> : null}
-                            {new Date(item.due_at).toLocaleDateString()}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-gray-300">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <ChevronRight className="w-4 h-4 text-gray-300" />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+      <div className="mb-4 flex items-center gap-2 border-b border-gray-200">
+        <button
+          type="button"
+          onClick={() => setActiveTab('pending')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === 'pending'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Awaiting My Review ({pending.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('completed')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === 'completed'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Completed Reviews ({completed.length})
+        </button>
       </div>
 
-      {/* Completed Reviews Section */}
-      {completed.length > 0 && (
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900 mb-3">Completed Reviews ({completed.length})</h2>
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-            {completedFiltered.length === 0 ? (
-              <div className="flex flex-col items-center py-12 text-center">
-                <p className="text-sm text-gray-500">
-                  {search ? 'No completed items match your search.' : 'No completed reviews.'}
-                </p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[880px]">
-                  <thead>
-                    <tr className="border-b border-gray-100 bg-gray-50">
-                      <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Title</th>
-                      <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Type</th>
-                      <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Program</th>
-                      <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">My Stage</th>
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        {isLoading ? (
+          <table className="w-full">
+            <tbody>
+              {Array.from({ length: 5 }).map((_, i) => (
+                <SkeletonRow key={i} cols={9} />
+              ))}
+            </tbody>
+          </table>
+        ) : isError ? (
+          <div className="flex flex-col items-center py-20 text-center">
+            <XCircle className="w-10 h-10 text-red-300 mb-3" />
+            <p className="text-gray-500">Failed to load review queue.</p>
+            <button onClick={() => refetch()} className="mt-3 text-blue-600 text-sm hover:underline">Retry</button>
+          </div>
+        ) : activeItems.length === 0 ? (
+          <div className="flex flex-col items-center py-12 text-center">
+            <ShieldCheck className="w-10 h-10 text-gray-200 mb-3" />
+            <p className="text-sm font-medium text-gray-500">
+              {search
+                ? `No ${activeTab} items match your search.`
+                : activeTab === 'pending'
+                ? 'No submissions awaiting your review.'
+                : 'No completed reviews.'}
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px]">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50">
+                  <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Title</th>
+                  <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Type</th>
+                  <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Program</th>
+                  <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">My Stage</th>
+                  <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Current Stage</th>
+                  {activeTab === 'pending' ? (
+                    <>
+                      <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Stage Since</th>
+                      <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Due</th>
+                    </>
+                  ) : (
+                    <>
                       <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Decision</th>
                       <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Decided</th>
-                      <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Ver.</th>
-                      <th scope="col" className="px-4 py-3 w-8" />
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {completedFiltered.map((item) => (
-                      <tr
-                        key={item.assignment_id}
-                        className="hover:bg-gray-50 cursor-pointer"
-                        onClick={() => navigate(`/submissions/${item.submission.id}`)}
-                      >
+                    </>
+                  )}
+                  <th scope="col" className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3">Ver.</th>
+                  <th scope="col" className="px-4 py-3 w-8" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {activeItems.map((item) => (
+                  <tr
+                    key={item.assignment_id}
+                    className="hover:bg-gray-50 cursor-pointer"
+                    onClick={() => navigate(`/submissions/${item.submission.id}`)}
+                  >
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium text-gray-900 truncate max-w-[240px]">
+                        {item.submission.title}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                      {item.submission.submission_type?.label ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                      {item.submission.program?.name ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-sm font-medium text-blue-700 whitespace-nowrap">
+                      {item.stage?.name ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                      {item.submission.current_stage?.name ?? '—'}
+                    </td>
+                    {activeTab === 'pending' ? (
+                      <>
+                        <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">
+                          {item.submission.current_stage_entered_at
+                            ? new Date(item.submission.current_stage_entered_at).toLocaleDateString()
+                            : '—'}
+                        </td>
                         <td className="px-4 py-3">
-                          <p className="text-sm font-medium text-gray-900 truncate max-w-[240px]">
-                            {item.submission.title}
-                          </p>
+                          {item.due_at ? (
+                            <span className={`flex items-center gap-1 text-xs whitespace-nowrap ${
+                              item.is_overdue ? 'text-red-600 font-semibold' : item.is_due_soon ? 'text-amber-600 font-medium' : 'text-gray-500'
+                            }`}>
+                              {item.is_overdue ? <AlertTriangle size={11} /> : item.is_due_soon ? <Clock size={11} /> : null}
+                              {new Date(item.due_at).toLocaleDateString()}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-300">—</span>
+                          )}
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
-                          {item.submission.submission_type?.label ?? '—'}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
-                          {item.submission.program?.name ?? '—'}
-                        </td>
-                        <td className="px-4 py-3 text-sm font-medium text-blue-700 whitespace-nowrap">
-                          {item.stage?.name ?? '—'}
-                        </td>
+                      </>
+                    ) : (
+                      <>
                         <td className="px-4 py-3 text-sm capitalize text-gray-600 whitespace-nowrap">
                           {item.decision ?? '—'}
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">
                           {item.decision_at ? new Date(item.decision_at).toLocaleDateString() : '—'}
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-500">
-                          {item.submission.current_version > 0 ? `v${item.submission.current_version}` : '—'}
-                        </td>
-                        <td className="px-4 py-3">
-                          <ChevronRight className="w-4 h-4 text-gray-300" />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                      </>
+                    )}
+                    <td className="px-4 py-3 text-sm text-gray-500">
+                      {item.submission.current_version > 0 ? `v${item.submission.current_version}` : '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <ChevronRight className="w-4 h-4 text-gray-300" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }

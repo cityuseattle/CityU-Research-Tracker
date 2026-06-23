@@ -26,7 +26,8 @@ class SubmissionController extends Controller
     /**
      * GET /api/submissions/my-reviews
      * Returns submissions where the current user is an assigned reviewer.
-     * Response includes both 'pending' (awaiting decision) and 'completed' (past reviews).
+    * Response includes 'pending' (awaiting decision), 'future' (assigned at a
+    * later stage), and 'completed' (past reviews).
      *
      * Note: Old modes (assignments, submissions) are deprecated. Use the new split response.
      */
@@ -48,8 +49,9 @@ class SubmissionController extends Controller
         ->where('status', '!=', 'declined')
         ->get();
 
-        // ── Build two collections: pending and completed ─────────────────────
+        // ── Build three collections: pending, future and completed ────────────
         $pending = collect();
+        $future = collect();
         $completed = collect();
 
         foreach ($allAssignments->groupBy('submission_id') as $assignments) {
@@ -62,6 +64,30 @@ class SubmissionController extends Controller
             );
             if ($activePending) {
                 $pending->push($activePending);
+            }
+
+            // Future work: assigned, undecided, but not the current stage.
+            $currentOrder = $s->currentStage?->order;
+            $futureAssignment = $assignments
+                ->filter(function ($a) use ($s, $currentOrder) {
+                    if ($a->decision !== null) {
+                        return false;
+                    }
+
+                    if ($a->stage_id === $s->current_stage_id) {
+                        return false;
+                    }
+
+                    if ($currentOrder === null) {
+                        return true;
+                    }
+
+                    return ($a->stage?->order ?? PHP_INT_MAX) > $currentOrder;
+                })
+                ->sortBy(fn($a) => $a->stage?->order ?? PHP_INT_MAX)
+                ->first();
+            if ($futureAssignment) {
+                $future->push($futureAssignment);
             }
 
             // Completed: any assignment with a decision (most recent per submission)
@@ -83,6 +109,9 @@ class SubmissionController extends Controller
         // Sort completed: most recent decisions first
         $completed = $completed->sortByDesc(fn($a) => $a->decision_at?->timestamp ?? 0);
 
+        // Sort future by stage order (nearest upcoming first)
+        $future = $future->sortBy(fn($a) => $a->stage?->order ?? PHP_INT_MAX);
+
         $today = now()->toDateString();
 
         // Map pending assignments
@@ -95,8 +124,14 @@ class SubmissionController extends Controller
             return $this->formatReviewAssignment($a, $today);
         })->values();
 
+        // Map future assignments
+        $futureData = $future->map(function ($a) use ($today) {
+            return $this->formatReviewAssignment($a, $today);
+        })->values();
+
         return response()->json([
             'pending' => $pendingData,
+            'future' => $futureData,
             'completed' => $completedData,
         ]);
     }
